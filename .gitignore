@@ -1,0 +1,88 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor / IDE
+.idea/
+.vscode/
+.claude/settings.local.json
+*.swp
+*.swo
+
+# Logs
+*.log
+logs/
+
+# Env files
+.env
+.env.*
+*.env
+*.env.*
+.env*
+!.env.example
+!.env.*.example
+!*.env.example
+!**/.env.example
+
+# Local credentials / generated binaries
+*.exe
+*.pem
+*.key
+**/server.exe
+
+# Root temp
+tmp/
+temp/
+dist/
+coverage/
+
+# Frontend
+**/node_modules/
+frontend/node_modules/
+frontend/build/
+frontend/dist/
+frontend/.cache/
+frontend/.eslintcache
+**/build/
+**/dist/
+**/.cache/
+
+# Backend Go
+.gocache/
+backend/bin/
+backend/dist/
+backend/vendor/
+backend/server.exe
+*.test
+*.out
+coverage.out
+
+# Python AI service
+ai-service/.log/
+ai-service/.venv/
+ai-service/venv/
+ai-service/__pycache__/
+ai-service/**/__pycache__/
+**/.venv/
+**/venv/
+**/__pycache__/
+**/.pytest_cache/
+ai-service/.pytest_cache/
+ai-service/.mypy_cache/
+ai-service/.ruff_cache/
+ai-service/.coverage
+ai-service/htmlcov/
+
+# Generic Python
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Uploaded / generated assets
+uploads/
+storage/
+**/uploads/
+**/storage/
+data/
