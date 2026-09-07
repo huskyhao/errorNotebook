@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"encoding/json"
 	"errors"
 	"mime/multipart"
 	"net/http"
@@ -124,7 +125,7 @@ type updateQuestionRequest struct {
 	Stem          *string                 `json:"stem"`
 	QuestionType  *string                 `json:"questionType"`
 	CorrectAnswer *string                 `json:"correctAnswer"`
-	CategoryID    *int64                  `json:"categoryId"`
+	CategoryID    json.RawMessage         `json:"categoryId"`
 	Options       []models.QuestionOption `json:"options"`
 }
 
@@ -139,17 +140,32 @@ func (h *QuestionHandler) UpdateQuestion(c *gin.Context) {
 		response.Error(c, http.StatusBadRequest, "INVALID_REQUEST", err.Error())
 		return
 	}
+	var categoryID *int64
+	categoryIDSet := req.CategoryID != nil
+	if categoryIDSet && string(req.CategoryID) != "null" {
+		var value int64
+		if err := json.Unmarshal(req.CategoryID, &value); err != nil || value <= 0 {
+			response.Error(c, http.StatusBadRequest, "INVALID_CATEGORY_ID", "categoryId must be a positive id or null")
+			return
+		}
+		categoryID = &value
+	}
 
 	question, err := h.questionService.UpdateQuestion(c.Request.Context(), id, services.UpdateQuestionInput{
 		Stem:          req.Stem,
 		QuestionType:  req.QuestionType,
 		CorrectAnswer: req.CorrectAnswer,
-		CategoryID:    req.CategoryID,
+		CategoryID:    categoryID,
+		CategoryIDSet: categoryIDSet,
 		Options:       req.Options,
 	})
 	if err != nil {
 		if errors.Is(err, services.ErrQuestionNotFound) {
 			response.Error(c, http.StatusNotFound, "QUESTION_NOT_FOUND", "question not found")
+			return
+		}
+		if errors.Is(err, services.ErrInvalidCategory) {
+			response.Error(c, http.StatusBadRequest, "INVALID_CATEGORY_ID", err.Error())
 			return
 		}
 		response.Error(c, http.StatusInternalServerError, "QUESTION_UPDATE_FAILED", err.Error())
@@ -207,6 +223,23 @@ func (h *QuestionHandler) AnalyzeQuestion(c *gin.Context) {
 	}
 
 	response.Created(c, result)
+}
+
+func (h *QuestionHandler) RetryOCR(c *gin.Context) {
+	id, ok := parseIDParam(c)
+	if !ok {
+		return
+	}
+	result, err := h.questionService.RetryOCR(c.Request.Context(), id)
+	if err != nil {
+		if errors.Is(err, services.ErrQuestionNotFound) {
+			response.Error(c, http.StatusNotFound, "QUESTION_NOT_FOUND", "question not found")
+			return
+		}
+		response.Error(c, http.StatusBadRequest, "OCR_RETRY_FAILED", err.Error())
+		return
+	}
+	response.OK(c, result)
 }
 
 func (h *QuestionHandler) GetAnalysis(c *gin.Context) {
@@ -336,6 +369,10 @@ func (h *QuestionHandler) CreateChatMessage(c *gin.Context) {
 			response.Error(c, http.StatusNotFound, "QUESTION_NOT_FOUND", "question not found")
 			return
 		}
+		if errors.Is(err, services.ErrAIUnavailable) {
+			response.Error(c, http.StatusBadGateway, "AI_CHAT_UNAVAILABLE", err.Error())
+			return
+		}
 		response.Error(c, http.StatusInternalServerError, "QUESTION_CHAT_FAILED", err.Error())
 		return
 	}
@@ -431,6 +468,10 @@ func (h *QuestionHandler) SetQuestionTags(c *gin.Context) {
 			response.Error(c, http.StatusNotFound, "QUESTION_NOT_FOUND", "question not found")
 			return
 		}
+		if errors.Is(err, repository.ErrTagNotFound) {
+			response.Error(c, http.StatusBadRequest, "INVALID_TAG_IDS", err.Error())
+			return
+		}
 		response.Error(c, http.StatusInternalServerError, "QUESTION_TAG_FAILED", err.Error())
 		return
 	}
@@ -455,6 +496,28 @@ func (h *QuestionHandler) GetJob(c *gin.Context) {
 		return
 	}
 
+	response.OK(c, job)
+}
+
+func (h *QuestionHandler) RetryJob(c *gin.Context) {
+	jobID := strings.TrimSpace(c.Param("jobId"))
+	if jobID == "" {
+		response.Error(c, http.StatusBadRequest, "INVALID_JOB_ID", "jobId is required")
+		return
+	}
+	job, err := h.jobService.RetryJob(jobID)
+	if err != nil {
+		if errors.Is(err, services.ErrJobNotFound) {
+			response.Error(c, http.StatusNotFound, "JOB_NOT_FOUND", "job not found")
+			return
+		}
+		if errors.Is(err, services.ErrJobNotRetryable) {
+			response.Error(c, http.StatusConflict, "JOB_NOT_RETRYABLE", err.Error())
+			return
+		}
+		response.Error(c, http.StatusInternalServerError, "JOB_RETRY_FAILED", err.Error())
+		return
+	}
 	response.OK(c, job)
 }
 

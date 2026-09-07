@@ -3,6 +3,7 @@ package models
 import "time"
 
 type Category struct {
+	// ParentID remains for compatibility with legacy rows; new categories are top-level subjects.
 	ID        int64     `gorm:"primaryKey" json:"id"`
 	Name      string    `gorm:"type:varchar(255);not null;uniqueIndex" json:"name"`
 	ParentID  *int64    `gorm:"column:parent_id;index" json:"parentId,omitempty"`

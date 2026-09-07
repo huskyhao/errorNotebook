@@ -31,7 +31,7 @@ export default function TagEditor({ questionTags, allTags, onTagsChange }: TagEd
   }, []);
 
   async function addTagById(tagId: number) {
-    const newIds = [...questionTags.map((t) => t.id), tagId];
+    const newIds = Array.from(new Set([...questionTags.map((t) => t.id), tagId]));
     onTagsChange(newIds);
     setInputValue('');
     setShowSuggestions(false);
@@ -77,13 +77,13 @@ export default function TagEditor({ questionTags, allTags, onTagsChange }: TagEd
   return (
     <div className="tag-editor" ref={containerRef}>
       <div className="tag-editor-add-row">
-        <span className="selector-label">添加标签</span>
+        <span className="selector-label">标签</span>
         <div className="tag-editor-input-wrap">
           <input
             ref={inputRef}
             className="tag-editor-input"
             type="text"
-            placeholder="添加标签..."
+            placeholder="添加知识点..."
             value={inputValue}
             onChange={(e) => {
               setInputValue(e.target.value);

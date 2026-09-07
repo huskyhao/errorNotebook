@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"mime/multipart"
 	"os"
@@ -15,20 +16,25 @@ import (
 	"erro-notebook/backend/internal/integrations/ai"
 	"erro-notebook/backend/internal/models"
 	"erro-notebook/backend/internal/repository"
+	"erro-notebook/backend/internal/storage"
 )
 
 var ErrQuestionNotFound = errors.New("question not found")
+var ErrInvalidCategory = errors.New("category must be an existing top-level subject category")
+var ErrAIUnavailable = errors.New("ai service unavailable")
 
 type QuestionService struct {
-	questionRepo     *repository.QuestionRepository
-	jobRepo          *repository.JobRepository
-	analysisRepo     *repository.AnalysisRepository
-	chatRepo         *repository.ChatRepository
-	batchRepo        *repository.BatchRepository
-	learningRepo     *repository.LearningStateRepository
-	aiClient         *ai.Client
-	aiClientAsync    *ai.Client // long timeout for async analysis goroutines
-	maxConcurrentOCR int
+	questionRepo  *repository.QuestionRepository
+	jobRepo       *repository.JobRepository
+	analysisRepo  *repository.AnalysisRepository
+	chatRepo      *repository.ChatRepository
+	batchRepo     *repository.BatchRepository
+	learningRepo  *repository.LearningStateRepository
+	categoryRepo  *repository.CategoryRepository
+	tagRepo       *repository.TagRepository
+	aiClient      *ai.Client
+	aiClientAsync *ai.Client
+	objectStorage storage.ObjectStorage
 }
 
 func NewQuestionService(
@@ -38,20 +44,24 @@ func NewQuestionService(
 	chatRepo *repository.ChatRepository,
 	batchRepo *repository.BatchRepository,
 	learningRepo *repository.LearningStateRepository,
+	categoryRepo *repository.CategoryRepository,
+	tagRepo *repository.TagRepository,
 	aiClient *ai.Client,
 	aiClientAsync *ai.Client,
-	maxConcurrentOCR int,
+	objectStorage storage.ObjectStorage,
 ) *QuestionService {
 	return &QuestionService{
-		questionRepo:     questionRepo,
-		jobRepo:          jobRepo,
-		analysisRepo:     analysisRepo,
-		chatRepo:         chatRepo,
-		batchRepo:        batchRepo,
-		learningRepo:     learningRepo,
-		aiClient:         aiClient,
-		aiClientAsync:    aiClientAsync,
-		maxConcurrentOCR: maxConcurrentOCR,
+		questionRepo:  questionRepo,
+		jobRepo:       jobRepo,
+		analysisRepo:  analysisRepo,
+		chatRepo:      chatRepo,
+		batchRepo:     batchRepo,
+		learningRepo:  learningRepo,
+		categoryRepo:  categoryRepo,
+		tagRepo:       tagRepo,
+		aiClient:      aiClient,
+		aiClientAsync: aiClientAsync,
+		objectStorage: objectStorage,
 	}
 }
 
@@ -98,6 +108,7 @@ type UpdateQuestionInput struct {
 	QuestionType  *string
 	CorrectAnswer *string
 	CategoryID    *int64
+	CategoryIDSet bool
 	Options       []models.QuestionOption
 }
 
@@ -151,6 +162,7 @@ type BatchImportItemResult struct {
 	FileIndex       int    `json:"fileIndex"`
 	FileName        string `json:"fileName"`
 	QuestionID      int64  `json:"questionId,omitempty"`
+	JobID           string `json:"jobId,omitempty"`
 	Status          string `json:"status"`
 	ProcessingStage string `json:"processingStage,omitempty"`
 	Error           string `json:"error,omitempty"`
@@ -172,10 +184,7 @@ func (s *QuestionService) BatchImportQuestions(ctx context.Context, input BatchI
 		}
 	}
 
-	batch := &models.BatchImport{
-		UserID:     1,
-		TotalFiles: len(input.Files),
-	}
+	batch := &models.BatchImport{UserID: 1, TotalFiles: len(input.Files)}
 	if err := s.batchRepo.CreateBatch(batch); err != nil {
 		return nil, err
 	}
@@ -196,31 +205,36 @@ func (s *QuestionService) BatchImportQuestions(ctx context.Context, input BatchI
 		if err := s.questionRepo.Create(question); err != nil {
 			return nil, err
 		}
+		objectKey, err := s.storeUploadedImage(ctx, question.ID, fh)
+		if err != nil {
+			question.OCRStatus = "failed"
+			_ = s.questionRepo.Update(question)
+			return nil, fmt.Errorf("store uploaded image: %w", err)
+		}
+		question.ImagePath = &objectKey
+		if err := s.questionRepo.Update(question); err != nil {
+			return nil, err
+		}
+		job := &models.Job{
+			JobID: newJobID("ocr"), QuestionID: question.ID, JobType: "ocr",
+			Status: "pending", MaxAttempts: 3, ProcessingStage: "queued",
+		}
+		if err := s.jobRepo.Create(job); err != nil {
+			return nil, err
+		}
 		items[i] = models.BatchImportItem{
 			BatchID:         batch.ID,
 			QuestionID:      question.ID,
+			JobID:           job.JobID,
+			ObjectKey:       objectKey,
 			FileIndex:       i,
 			FileName:        fh.Filename,
 			Status:          "pending",
-			ProcessingStage: "pending",
+			ProcessingStage: "queued",
 		}
 	}
 	if err := s.batchRepo.CreateItems(items); err != nil {
 		return nil, err
-	}
-
-	// Launch OCR workers without blocking the request on the concurrency gate.
-	limit := s.maxConcurrentOCR
-	if limit < 1 {
-		limit = 1
-	}
-	sem := make(chan struct{}, limit)
-	for i := range items {
-		go func(idx int, item models.BatchImportItem, fh *multipart.FileHeader) {
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			s.processBatchItem(item, fh)
-		}(i, items[i], input.Files[i])
 	}
 
 	result := &BatchImportResult{
@@ -232,63 +246,12 @@ func (s *QuestionService) BatchImportQuestions(ctx context.Context, input BatchI
 			FileIndex:       item.FileIndex,
 			FileName:        item.FileName,
 			QuestionID:      item.QuestionID,
+			JobID:           item.JobID,
 			Status:          item.Status,
 			ProcessingStage: item.ProcessingStage,
 		})
 	}
 	return result, nil
-}
-
-func (s *QuestionService) processBatchItem(item models.BatchImportItem, fh *multipart.FileHeader) {
-	defer func() {
-		if r := recover(); r != nil {
-			log.Printf("[batch] panic batch=%d item=%d question=%d file=%s stage=%s: %v", item.BatchID, item.FileIndex, item.QuestionID, item.FileName, item.ProcessingStage, r)
-			s.failBatchItem(&item, "panic", fmt.Sprintf("batch item panic at %s: %v", item.ProcessingStage, r))
-		}
-	}()
-
-	item.Status = "processing"
-	item.ProcessingStage = "loading_question"
-	_ = s.batchRepo.UpdateItem(&item)
-
-	question, err := s.questionRepo.GetByID(item.QuestionID)
-	if err != nil || question == nil {
-		s.failBatchItem(&item, "loading_question", "question not found")
-		return
-	}
-
-	item.ProcessingStage = "creating_ocr_job"
-	_ = s.batchRepo.UpdateItem(&item)
-	job := &models.Job{
-		JobID:      newJobID("ocr"),
-		QuestionID: question.ID,
-		JobType:    "ocr",
-		Status:     "pending",
-	}
-	if err := s.jobRepo.Create(job); err != nil {
-		s.failBatchItem(&item, "creating_ocr_job", fmt.Sprintf("create job: %v", err))
-		return
-	}
-
-	item.ProcessingStage = "ocr_structuring"
-	_ = s.batchRepo.UpdateItem(&item)
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-	if err := s.runOCR(ctx, question, job, fh); err != nil {
-		s.markQuestionOCRFailed(question.ID)
-		s.failBatchItem(&item, "ocr_structuring", err.Error())
-		return
-	}
-
-	item.Status = ocrTaskStatus(question)
-	item.ProcessingStage = item.Status
-	item.ErrorMsg = nil
-	_ = s.batchRepo.UpdateItem(&item)
-
-	// Auto-trigger analysis
-	if _, err := s.AnalyzeQuestion(context.Background(), question.ID); err != nil {
-		log.Printf("[batch] analyze trigger failed question=%d: %v", question.ID, err)
-	}
 }
 
 func (s *QuestionService) failBatchItem(item *models.BatchImportItem, stage string, message string) {
@@ -338,6 +301,7 @@ func (s *QuestionService) GetBatchImport(ctx context.Context, batchID int64) (*B
 			FileIndex:       item.FileIndex,
 			FileName:        item.FileName,
 			QuestionID:      item.QuestionID,
+			JobID:           item.JobID,
 			Status:          item.Status,
 			ProcessingStage: item.ProcessingStage,
 			Error:           errMsg,
@@ -387,41 +351,54 @@ func (s *QuestionService) ImportQuestion(ctx context.Context, input ImportQuesti
 		return nil, err
 	}
 
-	job := &models.Job{
-		JobID:      newJobID("ocr"),
-		QuestionID: question.ID,
-		JobType:    "ocr",
-		Status:     "pending",
-	}
-	if err := s.jobRepo.Create(job); err != nil {
-		return nil, err
-	}
-
 	if sourceType == "manual" {
-		if err := s.jobRepo.Update(markJobCompleted(job)); err != nil {
-			return nil, err
-		}
 		return &ImportQuestionResult{
-			JobID:      job.JobID,
 			QuestionID: question.ID,
 			Status:     "completed",
 		}, nil
 	}
 
-	if err := s.runOCR(ctx, question, job, input.FileHeader); err != nil {
+	objectKey, err := s.storeUploadedImage(ctx, question.ID, input.FileHeader)
+	if err != nil {
 		return nil, err
 	}
-
-	// Auto-trigger analysis after successful OCR (runs async in background).
-	if _, err := s.AnalyzeQuestion(ctx, question.ID); err != nil {
-		// Pre-flight check failed (question not found, DB error); import still succeeds.
+	question.ImagePath = &objectKey
+	if err := s.questionRepo.Update(question); err != nil {
+		return nil, err
+	}
+	job := &models.Job{
+		JobID: newJobID("ocr"), QuestionID: question.ID, JobType: "ocr",
+		Status: "pending", MaxAttempts: 3, ProcessingStage: "queued",
+	}
+	if err := s.jobRepo.Create(job); err != nil {
+		return nil, err
 	}
 
 	return &ImportQuestionResult{
 		JobID:      job.JobID,
 		QuestionID: question.ID,
-		Status:     ocrTaskStatus(question),
+		Status:     "pending",
 	}, nil
+}
+
+func (s *QuestionService) storeUploadedImage(ctx context.Context, questionID int64, fileHeader *multipart.FileHeader) (string, error) {
+	if s.objectStorage == nil {
+		return "", fmt.Errorf("object storage is not configured")
+	}
+	file, err := fileHeader.Open()
+	if err != nil {
+		return "", fmt.Errorf("open uploaded image: %w", err)
+	}
+	defer file.Close()
+	ext := strings.ToLower(filepath.Ext(fileHeader.Filename))
+	if ext == "" {
+		ext = ".bin"
+	}
+	key := filepath.ToSlash(filepath.Join("questions", fmt.Sprintf("%d", questionID), "original"+ext))
+	if err := s.objectStorage.Put(ctx, key, file); err != nil {
+		return "", err
+	}
+	return key, nil
 }
 
 func validateImageFile(fileHeader *multipart.FileHeader) error {
@@ -492,7 +469,19 @@ func (s *QuestionService) UpdateQuestion(ctx context.Context, id int64, input Up
 		value := strings.TrimSpace(*input.CorrectAnswer)
 		question.CorrectAnswer = &value
 	}
-	if input.CategoryID != nil {
+	categoryWasChanged := input.CategoryIDSet || input.CategoryID != nil
+	if categoryWasChanged {
+		if input.CategoryID != nil {
+			if s.categoryRepo != nil {
+				category, categoryErr := s.categoryRepo.GetByID(*input.CategoryID)
+				if categoryErr != nil {
+					return nil, categoryErr
+				}
+				if category == nil || category.ParentID != nil {
+					return nil, ErrInvalidCategory
+				}
+			}
+		}
 		question.CategoryID = input.CategoryID
 	}
 	if err := s.questionRepo.Update(question); err != nil {
@@ -536,10 +525,9 @@ func (s *QuestionService) DeleteQuestion(ctx context.Context, id int64) error {
 		return ErrQuestionNotFound
 	}
 
-	if question.ImagePath != nil {
-		uploadsDir := filepath.Dir(*question.ImagePath)
-		if removeErr := os.RemoveAll(uploadsDir); removeErr != nil {
-			// Log but don't fail — cleanup is best-effort.
+	if question.ImagePath != nil && s.objectStorage != nil {
+		if removeErr := s.objectStorage.Delete(ctx, *question.ImagePath); removeErr != nil {
+			log.Printf("[storage] delete question image failed question=%d: %v", id, removeErr)
 		}
 	}
 
@@ -601,120 +589,60 @@ func (s *QuestionService) AnalyzeQuestion(ctx context.Context, id int64) (*Analy
 	if question == nil {
 		return nil, ErrQuestionNotFound
 	}
+	if active, err := s.jobRepo.FindActiveByQuestionIDAndType(id, "analyze"); err != nil {
+		return nil, err
+	} else if active != nil {
+		return &AnalyzeQuestionResult{JobID: active.JobID, QuestionID: id, Status: active.Status}, nil
+	}
 
 	job := &models.Job{
-		JobID:      newJobID("analyze"),
-		QuestionID: id,
-		JobType:    "analyze",
-		Status:     "pending",
+		JobID: newJobID("analyze"), QuestionID: id, JobType: "analyze",
+		Status: "pending", MaxAttempts: 3, ProcessingStage: "queued",
 	}
 	if err := s.jobRepo.Create(job); err != nil {
 		return nil, err
 	}
 
-	question.AnalysisStatus = "processing"
+	question.AnalysisStatus = "pending"
 	if err := s.questionRepo.Update(question); err != nil {
 		return nil, err
 	}
 
-	traceID := fmt.Sprintf("trace_analyze_%d", time.Now().UnixNano())
-	warnings := parseWarnings(question.StructureWarnings)
-	req := ai.AnalyzeQuestionRequest{
-		QuestionID: question.ID,
-		TraceID:    traceID,
-		Question:   toAIStructuredQuestion(question, warnings),
-		UserAnswer: derefString(question.UserAnswer),
-		Context: map[string]any{
-			"sourceType":            question.SourceType,
-			"structureWarnings":     warnings,
-			"structureConfidence":   question.StructureConfidence,
-			"parseSource":           question.ParseSource,
-			"structureMayBePartial": hasStructureWarning(warnings, "options_incomplete") || hasMissingOptionWarning(warnings),
-		},
-	}
-
-	imagePath := ""
-	if question.HasDiagram && question.ImagePath != nil {
-		imagePath = *question.ImagePath
-	}
-
-	log.Printf("[analyze-async] launching goroutine question=%d job=%s", id, job.JobID)
-	go s.runAnalyzeAsync(job, req, imagePath)
-
 	return &AnalyzeQuestionResult{
 		JobID:      job.JobID,
 		QuestionID: id,
-		Status:     "processing",
+		Status:     "pending",
 	}, nil
 }
 
-func (s *QuestionService) runAnalyzeAsync(job *models.Job, req ai.AnalyzeQuestionRequest, imagePath string) {
-	defer func() {
-		if r := recover(); r != nil {
-			log.Printf("[analyze-async] PANIC question=%d job=%s: %v", req.QuestionID, job.JobID, r)
-			s.failQuestion(req.QuestionID)
-			markJobFailed(job, "ANALYZE_PANIC", fmt.Sprintf("%v", r))
-			_ = s.jobRepo.Update(job)
-		}
-	}()
-
-	log.Printf("[analyze-async] started question=%d job=%s", req.QuestionID, job.JobID)
-	bgCtx := context.Background()
-	now := time.Now()
-	job.Status = "processing"
-	job.StartedAt = &now
-	_ = s.jobRepo.Update(job)
-
-	log.Printf("[analyze-async] calling ai-service question=%d", req.QuestionID)
-	resp, err := s.aiClientAsync.AnalyzeQuestion(bgCtx, req, imagePath)
+func (s *QuestionService) RetryOCR(ctx context.Context, id int64) (*AnalyzeQuestionResult, error) {
+	question, err := s.questionRepo.GetByID(id)
 	if err != nil {
-		log.Printf("[analyze-async] ai-service FAILED question=%d: %v", req.QuestionID, err)
-		s.failQuestion(req.QuestionID)
-		markJobFailed(job, "ANALYZE_FAILED", err.Error())
-		_ = s.jobRepo.Update(job)
-		return
+		return nil, err
 	}
-	log.Printf("[analyze-async] ai-service OK question=%d answer=%s", req.QuestionID, resp.Analysis.Answer)
-
-	contentJSON, err := json.Marshal(resp.Analysis)
+	if question == nil {
+		return nil, ErrQuestionNotFound
+	}
+	job, err := s.jobRepo.GetLatestByQuestionIDAndType(id, "ocr")
 	if err != nil {
-		log.Printf("[analyze-async] marshal FAILED question=%d: %v", req.QuestionID, err)
-		s.failQuestion(req.QuestionID)
-		markJobFailed(job, "ANALYZE_MARSHAL_FAILED", err.Error())
-		_ = s.jobRepo.Update(job)
-		return
+		return nil, err
 	}
-
-	answer := resp.Analysis.Answer
-	analysis := &models.Analysis{
-		QuestionID:  req.QuestionID,
-		Provider:    "ai-service",
-		Answer:      &answer,
-		ContentJSON: string(contentJSON),
+	if job == nil {
+		return nil, fmt.Errorf("ocr job not found")
 	}
-	if err := s.analysisRepo.Create(analysis); err != nil {
-		log.Printf("[analyze-async] db-create FAILED question=%d: %v", req.QuestionID, err)
-		s.failQuestion(req.QuestionID)
-		markJobFailed(job, "ANALYZE_DB_FAILED", err.Error())
-		_ = s.jobRepo.Update(job)
-		return
+	if job.Status != "failed" {
+		return &AnalyzeQuestionResult{JobID: job.JobID, QuestionID: id, Status: job.Status}, nil
 	}
-
-	question, err := s.questionRepo.GetByID(req.QuestionID)
-	if err != nil || question == nil {
-		log.Printf("[analyze-async] question-gone question=%d", req.QuestionID)
-		markJobFailed(job, "ANALYZE_QUESTION_GONE", "question not found after analysis")
-		_ = s.jobRepo.Update(job)
-		return
+	job.Attempts = 0
+	if err := s.jobRepo.ResetForRetry(job); err != nil {
+		return nil, err
 	}
-
-	question.AnalysisStatus = "completed"
-	if resp.Analysis.Answer != "" {
-		question.CorrectAnswer = &resp.Analysis.Answer
+	question.OCRStatus = "pending"
+	question.AnalysisStatus = "pending"
+	if err := s.questionRepo.Update(question); err != nil {
+		return nil, err
 	}
-	_ = s.questionRepo.Update(question)
-	_ = s.jobRepo.Update(markJobCompleted(job))
-	log.Printf("[analyze-async] completed question=%d", req.QuestionID)
+	return &AnalyzeQuestionResult{JobID: job.JobID, QuestionID: id, Status: "pending"}, nil
 }
 
 func (s *QuestionService) failQuestion(questionID int64) {
@@ -841,7 +769,7 @@ func (s *QuestionService) CreateChatMessage(ctx context.Context, questionID int6
 		return nil, ErrQuestionNotFound
 	}
 
-	attachments, err := s.saveChatAttachments(questionID, input.AttachmentFiles)
+	attachments, err := s.saveChatAttachments(ctx, questionID, input.AttachmentFiles)
 	if err != nil {
 		return nil, err
 	}
@@ -898,10 +826,9 @@ func (s *QuestionService) CreateChatMessage(ctx context.Context, questionID int6
 	var replyText string
 	if err != nil {
 		log.Printf("[chat] ai-service FAILED question=%d: %v", questionID, err)
-		replyText = buildFallbackReply(question, input.Message)
-	} else {
-		replyText = resp.Reply
+		return nil, fmt.Errorf("%w: %v", ErrAIUnavailable, err)
 	}
+	replyText = resp.Reply
 
 	assistantMessage := &models.ChatMessage{
 		QuestionID: questionID,
@@ -915,13 +842,12 @@ func (s *QuestionService) CreateChatMessage(ctx context.Context, questionID int6
 	return s.chatRepo.ListByQuestionID(questionID)
 }
 
-func (s *QuestionService) saveChatAttachments(questionID int64, files []*multipart.FileHeader) ([]ChatAttachment, error) {
+func (s *QuestionService) saveChatAttachments(ctx context.Context, questionID int64, files []*multipart.FileHeader) ([]ChatAttachment, error) {
 	if len(files) == 0 {
 		return nil, nil
 	}
-	dir := filepath.Join("backend", "uploads", fmt.Sprintf("%d", questionID), "chat")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return nil, fmt.Errorf("create chat attachment directory: %w", err)
+	if s.objectStorage == nil {
+		return nil, fmt.Errorf("object storage is not configured")
 	}
 
 	attachments := make([]ChatAttachment, 0, len(files))
@@ -936,23 +862,15 @@ func (s *QuestionService) saveChatAttachments(questionID int64, files []*multipa
 		defer src.Close()
 
 		filename := fmt.Sprintf("%d_%d%s", time.Now().UnixNano(), idx, strings.ToLower(filepath.Ext(fh.Filename)))
-		targetPath := filepath.Join(dir, filename)
-		dst, err := os.Create(targetPath)
-		if err != nil {
-			return nil, fmt.Errorf("create chat attachment: %w", err)
-		}
-		if _, err := dst.ReadFrom(src); err != nil {
-			dst.Close()
+		objectKey := filepath.ToSlash(filepath.Join("questions", fmt.Sprintf("%d", questionID), "chat", filename))
+		if err := s.objectStorage.Put(ctx, objectKey, src); err != nil {
 			return nil, fmt.Errorf("save chat attachment: %w", err)
-		}
-		if err := dst.Close(); err != nil {
-			return nil, fmt.Errorf("close chat attachment: %w", err)
 		}
 
 		attachments = append(attachments, ChatAttachment{
 			FileName:    fh.Filename,
 			ContentType: fh.Header.Get("Content-Type"),
-			FilePath:    targetPath,
+			FilePath:    objectKey,
 			Size:        fh.Size,
 		})
 	}
@@ -974,48 +892,41 @@ func (s *QuestionService) GetChatMessages(ctx context.Context, questionID int64)
 	return s.chatRepo.ListByQuestionID(questionID)
 }
 
-func (s *QuestionService) runOCR(ctx context.Context, question *models.Question, job *models.Job, fileHeader *multipart.FileHeader) error {
-	now := time.Now()
-	job.Status = "processing"
-	job.StartedAt = &now
-	if err := s.jobRepo.Update(job); err != nil {
+func (s *QuestionService) runOCRObject(ctx context.Context, question *models.Question, job *models.Job) error {
+	if s.objectStorage == nil || question.ImagePath == nil || strings.TrimSpace(*question.ImagePath) == "" {
+		return fmt.Errorf("source image is unavailable")
+	}
+	reader, err := s.openQuestionImage(ctx, *question.ImagePath)
+	if err != nil {
 		return err
 	}
-
-	question.OCRStatus = "processing"
-	if err := s.questionRepo.Update(question); err != nil {
-		return err
-	}
-
-	file, err := fileHeader.Open()
+	defer reader.Close()
+	tempFile, err := os.CreateTemp("", "erro-question-*")
 	if err != nil {
-		return fmt.Errorf("open uploaded file: %w", err)
-	}
-	defer file.Close()
-
-	tempFile, err := os.CreateTemp("", "erro-question-*"+filepath.Ext(fileHeader.Filename))
-	if err != nil {
-		return fmt.Errorf("create temp file: %w", err)
+		return fmt.Errorf("create ai input: %w", err)
 	}
 	tempPath := tempFile.Name()
 	defer os.Remove(tempPath)
-
-	if _, err := tempFile.ReadFrom(file); err != nil {
+	if _, err := io.Copy(tempFile, reader); err != nil {
 		tempFile.Close()
-		return fmt.Errorf("write temp file: %w", err)
+		return fmt.Errorf("materialize source image: %w", err)
 	}
 	if err := tempFile.Close(); err != nil {
-		return fmt.Errorf("close temp file: %w", err)
+		return fmt.Errorf("close ai input: %w", err)
 	}
 
+	question.OCRStatus = "processing"
+	job.ProcessingStage = "ocr"
+	if err := s.questionRepo.Update(question); err != nil {
+		return err
+	}
 	traceID := fmt.Sprintf("trace_ocr_%d", time.Now().UnixNano())
 	resp, err := s.aiClient.ParseQuestionImage(ctx, question.ID, traceID, question.SourceType, tempPath)
 	if err != nil {
-		question.OCRStatus = "failed"
-		_ = s.questionRepo.Update(question)
-		markJobFailed(job, "OCR_FAILED", err.Error())
-		_ = s.jobRepo.Update(job)
 		return fmt.Errorf("parse question image by ai service: %w", err)
+	}
+	if strings.TrimSpace(resp.RawText) == "" && strings.TrimSpace(resp.StructuredQuestion.Stem) == "" {
+		return fmt.Errorf("ocr returned an empty result")
 	}
 
 	question.Stem = strings.TrimSpace(resp.StructuredQuestion.Stem)
@@ -1028,15 +939,14 @@ func (s *QuestionService) runOCR(ctx context.Context, question *models.Question,
 	if len(warnings) == 0 {
 		warnings = resp.Warnings
 	}
-	if warningsJSON, err := json.Marshal(warnings); err == nil {
+	if warningsJSON, marshalErr := json.Marshal(warnings); marshalErr == nil {
 		value := string(warningsJSON)
 		question.StructureWarnings = &value
 	}
 	question.StructureConfidence = resp.StructuredQuestion.Metadata.OCRConfidence
+	question.ParseSource = "rules"
 	if resp.StructuredQuestion.Metadata.ExtractionMethod != nil && strings.TrimSpace(*resp.StructuredQuestion.Metadata.ExtractionMethod) != "" {
 		question.ParseSource = strings.TrimSpace(*resp.StructuredQuestion.Metadata.ExtractionMethod)
-	} else {
-		question.ParseSource = "rules"
 	}
 	question.OCRStatus = "completed"
 	question.HasDiagram = resp.StructuredQuestion.HasDiagram
@@ -1048,46 +958,12 @@ func (s *QuestionService) runOCR(ctx context.Context, question *models.Question,
 		desc := strings.TrimSpace(resp.StructuredQuestion.DiagramDescription)
 		question.DiagramDescription = &desc
 	}
-
-	uploadsDir := filepath.Join("backend", "uploads", fmt.Sprintf("%d", question.ID))
-	if err := os.MkdirAll(uploadsDir, 0o755); err != nil {
-		return fmt.Errorf("create uploads directory: %w", err)
-	}
-	ext := filepath.Ext(fileHeader.Filename)
-	persistPath := filepath.Join(uploadsDir, "original"+ext)
-	src, err := os.Open(tempPath)
-	if err != nil {
-		return fmt.Errorf("open temp file for persist: %w", err)
-	}
-	defer src.Close()
-	dst, err := os.Create(persistPath)
-	if err != nil {
-		return fmt.Errorf("create persist file: %w", err)
-	}
-	defer dst.Close()
-	if _, err := dst.ReadFrom(src); err != nil {
-		return fmt.Errorf("persist image file: %w", err)
-	}
-	question.ImagePath = &persistPath
-
 	if err := s.questionRepo.Update(question); err != nil {
 		return err
 	}
-
 	if err := s.questionRepo.ReplaceOptions(question.ID, toQuestionOptions(question.ID, resp.StructuredQuestion.Options)); err != nil {
 		return err
 	}
-
-	var finalJob *models.Job
-	if ocrTaskStatus(question) == "needs_review" {
-		finalJob = markJobNeedsReview(job)
-	} else {
-		finalJob = markJobCompleted(job)
-	}
-	if err := s.jobRepo.Update(finalJob); err != nil {
-		return err
-	}
-
 	return nil
 }
 
@@ -1366,6 +1242,68 @@ func cleanStringSlice(values []string) []string {
 	return result
 }
 
+// validateTaxonomySuggestion resolves AI-proposed names against the business
+// taxonomy without changing the question. Unmatched names remain visible so
+// a later user-confirmation flow can decide whether to create or replace them.
+func (s *QuestionService) validateTaxonomySuggestion(input *ai.TaxonomySuggestion) *ai.TaxonomySuggestion {
+	if input == nil {
+		return nil
+	}
+
+	suggestion := *input
+	suggestion.CategoryName = strings.TrimSpace(suggestion.CategoryName)
+	suggestion.TagNames = cleanStringSlice(suggestion.TagNames)
+	suggestion.CategoryID = nil
+	suggestion.TagIDs = nil
+	suggestion.UnresolvedTagNames = nil
+	suggestion.UnresolvedCategory = false
+	if suggestion.Confidence != nil {
+		confidence := *suggestion.Confidence
+		if confidence < 0 {
+			confidence = 0
+		}
+		if confidence > 1 {
+			confidence = 1
+		}
+		suggestion.Confidence = &confidence
+	}
+
+	if s.categoryRepo != nil && suggestion.CategoryName != "" {
+		categories, err := s.categoryRepo.List()
+		if err == nil {
+			for _, category := range categories {
+				if category.ParentID == nil && strings.EqualFold(category.Name, suggestion.CategoryName) {
+					categoryID := category.ID
+					suggestion.CategoryID = &categoryID
+					break
+				}
+			}
+		}
+		if suggestion.CategoryID == nil {
+			suggestion.UnresolvedCategory = true
+		}
+	}
+
+	if s.tagRepo != nil && len(suggestion.TagNames) > 0 {
+		tags, err := s.tagRepo.List()
+		if err == nil {
+			byName := make(map[string]int64, len(tags))
+			for _, tag := range tags {
+				byName[strings.ToLower(strings.TrimSpace(tag.Name))] = tag.ID
+			}
+			for _, name := range suggestion.TagNames {
+				if tagID, ok := byName[strings.ToLower(name)]; ok {
+					suggestion.TagIDs = append(suggestion.TagIDs, tagID)
+				} else {
+					suggestion.UnresolvedTagNames = append(suggestion.UnresolvedTagNames, name)
+				}
+			}
+		}
+	}
+
+	return &suggestion
+}
+
 func clampInt(value, min, max int) int {
 	if value < min {
 		return min
@@ -1480,6 +1418,8 @@ func markJobCompleted(job *models.Job) *models.Job {
 	now := time.Now()
 	job.Status = "completed"
 	job.FinishedAt = &now
+	job.LockedAt = nil
+	job.NextRunAt = nil
 	job.ErrorCode = nil
 	job.ErrorMessage = nil
 	return job
@@ -1489,6 +1429,8 @@ func markJobNeedsReview(job *models.Job) *models.Job {
 	now := time.Now()
 	job.Status = "needs_review"
 	job.FinishedAt = &now
+	job.LockedAt = nil
+	job.NextRunAt = nil
 	job.ErrorCode = nil
 	job.ErrorMessage = nil
 	return job
@@ -1498,6 +1440,8 @@ func markJobFailed(job *models.Job, code string, message string) *models.Job {
 	now := time.Now()
 	job.Status = "failed"
 	job.FinishedAt = &now
+	job.LockedAt = nil
+	job.NextRunAt = nil
 	job.ErrorCode = &code
 	job.ErrorMessage = &message
 	return job

@@ -1,11 +1,15 @@
 package services
 
 import (
+	"errors"
 	"strings"
 
 	"erro-notebook/backend/internal/models"
 	"erro-notebook/backend/internal/repository"
 )
+
+var ErrNestedCategoryNotSupported = errors.New("nested categories are not supported; use a top-level subject category")
+var ErrEmptyTaxonomyName = errors.New("taxonomy name must not be empty")
 
 type TaxonomyService struct {
 	categoryRepo *repository.CategoryRepository
@@ -27,9 +31,15 @@ func (s *TaxonomyService) ListCategories() ([]models.Category, error) {
 }
 
 func (s *TaxonomyService) CreateCategory(name string, parentID *int64) (*models.Category, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil, ErrEmptyTaxonomyName
+	}
+	if parentID != nil {
+		return nil, ErrNestedCategoryNotSupported
+	}
 	category := &models.Category{
-		Name:     strings.TrimSpace(name),
-		ParentID: parentID,
+		Name: name,
 	}
 	if err := s.categoryRepo.Create(category); err != nil {
 		return nil, err
@@ -42,7 +52,11 @@ func (s *TaxonomyService) ListTags() ([]models.Tag, error) {
 }
 
 func (s *TaxonomyService) CreateTag(name string) (*models.Tag, error) {
-	tag := &models.Tag{Name: strings.TrimSpace(name)}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil, ErrEmptyTaxonomyName
+	}
+	tag := &models.Tag{Name: name}
 	if err := s.tagRepo.Create(tag); err != nil {
 		return nil, err
 	}
@@ -61,8 +75,18 @@ func (s *TaxonomyService) UpdateCategory(id int64, name string, parentID *int64)
 	if category == nil {
 		return nil, nil
 	}
-	category.Name = strings.TrimSpace(name)
-	category.ParentID = parentID
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil, ErrEmptyTaxonomyName
+	}
+	if parentID != nil {
+		return nil, ErrNestedCategoryNotSupported
+	}
+	category.Name = name
+	// Categories are intentionally a single, stable subject dimension. Keep
+	// ParentID in the model for backwards compatibility with old rows, but do
+	// not create or deepen a hierarchy in the current MVP.
+	category.ParentID = nil
 	if err := s.categoryRepo.Update(category); err != nil {
 		return nil, err
 	}

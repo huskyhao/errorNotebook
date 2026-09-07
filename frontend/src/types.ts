@@ -60,6 +60,11 @@ export type AnalysisItem = {
     answer?: string;
     summary?: string;
     knowledgePoints?: string[];
+    taxonomySuggestion?: {
+      categoryName?: string | null;
+      tagNames?: string[];
+      confidence?: number | null;
+    } | null;
     steps?: string[];
     optionAnalysis?: Record<string, string>;
     pitfalls?: string[];

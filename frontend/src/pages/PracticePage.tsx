@@ -500,7 +500,7 @@ export default function PracticePage() {
           <div className="practice-setup-content">
             <div className="practice-setup-header">
               <h1 className="section-title-heading">做题模式</h1>
-              <p className="practice-setup-desc">选择已识别并可练习的题目，支持选择、判断、填空与主观题</p>
+              <p className="practice-setup-desc">面向当前行动：从错题生成练习，作答后回到单题工作台查看 AI 解析并继续追问。</p>
             </div>
 
             <div className="recommendation-strip">
@@ -553,6 +553,8 @@ export default function PracticePage() {
               </div>
             </div>
 
+            <p className="practice-setup-hint">上方推荐优先覆盖今日复习、最近答错和薄弱知识点；手动选择适合临时按学科练习。</p>
+
             {loading ? (
               <div className="empty-state">正在加载题目...</div>
             ) : filteredQuestions.length === 0 ? (
@@ -580,6 +582,7 @@ export default function PracticePage() {
                         <div className="practice-select-stem">{q.stem}</div>
                         <div className="practice-select-meta">
                           <span className="tag tag--outline">{questionTypeLabel(q.questionType)}</span>
+                          {q.tags?.slice(0, 3).map((tag) => <span className="tag tag--user" key={tag.id}>{tag.name}</span>)}
                           {q.analysisStatus === 'completed' ? (
                             <span className="tag-dot is-success" />
                           ) : q.analysisStatus === 'processing' ? (
@@ -799,6 +802,9 @@ export default function PracticePage() {
                         <span className="result-answer-label">{q.gradingComment}</span>
                       </div>
                     )}
+                  </div>
+                  <div className="result-question-actions">
+                    <Link className="text-button" to={`/?questionId=${q.question.id}`}>查看 AI 解析与追问</Link>
                   </div>
                 </div>
               ))}

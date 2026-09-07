@@ -15,10 +15,19 @@ class AnalysisRequest(BaseModel):
     context: dict[str, Any] = Field(default_factory=dict)
 
 
+class TaxonomySuggestion(BaseModel):
+    """Advisory taxonomy output; the Go service must validate before apply."""
+
+    categoryName: str | None = None
+    tagNames: list[str] = Field(default_factory=list)
+    confidence: float | None = None
+
+
 class AnalysisPayload(BaseModel):
     answer: str
     summary: str
     knowledgePoints: list[str] = Field(default_factory=list)
+    taxonomySuggestion: TaxonomySuggestion | None = None
     steps: list[str] = Field(default_factory=list)
     optionAnalysis: dict[str, str] = Field(default_factory=dict)
     pitfalls: list[str] = Field(default_factory=list)

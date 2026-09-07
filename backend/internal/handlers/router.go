@@ -29,6 +29,7 @@ func NewRouter(
 			api.PATCH("/questions/:id", questionHandler.UpdateQuestion)
 			api.POST("/questions/:id/answer", questionHandler.SubmitAnswer)
 			api.POST("/questions/:id/analyze", questionHandler.AnalyzeQuestion)
+			api.POST("/questions/:id/ocr/retry", questionHandler.RetryOCR)
 			api.GET("/questions/:id/analysis", questionHandler.GetAnalysis)
 			api.GET("/questions/:id/learning-state", questionHandler.GetLearningState)
 			api.PATCH("/questions/:id/learning-state", questionHandler.UpdateLearningState)
@@ -40,6 +41,7 @@ func NewRouter(
 			api.DELETE("/questions/:id", questionHandler.DeleteQuestion)
 			api.GET("/batch-imports/:id", questionHandler.GetBatchImport)
 			api.GET("/jobs/:jobId", questionHandler.GetJob)
+			api.POST("/jobs/:jobId/retry", questionHandler.RetryJob)
 		}
 
 		if practiceHandler != nil {

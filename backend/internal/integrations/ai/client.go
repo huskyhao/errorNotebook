@@ -74,13 +74,27 @@ type AnalyzeQuestionRequest struct {
 }
 
 type AnalysisPayload struct {
-	Answer          string            `json:"answer"`
-	Summary         string            `json:"summary"`
-	KnowledgePoints []string          `json:"knowledgePoints"`
-	Steps           []string          `json:"steps"`
-	OptionAnalysis  map[string]string `json:"optionAnalysis"`
-	Pitfalls        []string          `json:"pitfalls"`
-	ReviewAdvice    []string          `json:"reviewAdvice"`
+	Answer             string              `json:"answer"`
+	Summary            string              `json:"summary"`
+	KnowledgePoints    []string            `json:"knowledgePoints"`
+	TaxonomySuggestion *TaxonomySuggestion `json:"taxonomySuggestion,omitempty"`
+	Steps              []string            `json:"steps"`
+	OptionAnalysis     map[string]string   `json:"optionAnalysis"`
+	Pitfalls           []string            `json:"pitfalls"`
+	ReviewAdvice       []string            `json:"reviewAdvice"`
+}
+
+// TaxonomySuggestion is advisory only. The Go business layer stores it with
+// the analysis and remains responsible for validating and applying any
+// category/tag changes after user confirmation.
+type TaxonomySuggestion struct {
+	CategoryName       string   `json:"categoryName,omitempty"`
+	TagNames           []string `json:"tagNames,omitempty"`
+	Confidence         *float64 `json:"confidence,omitempty"`
+	CategoryID         *int64   `json:"categoryId,omitempty"`
+	TagIDs             []int64  `json:"tagIds,omitempty"`
+	UnresolvedCategory bool     `json:"unresolvedCategory,omitempty"`
+	UnresolvedTagNames []string `json:"unresolvedTagNames,omitempty"`
 }
 
 type AnalyzeQuestionResponse struct {

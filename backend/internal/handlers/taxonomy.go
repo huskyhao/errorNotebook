@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 
@@ -42,6 +43,10 @@ func (h *TaxonomyHandler) CreateCategory(c *gin.Context) {
 
 	item, err := h.taxonomyService.CreateCategory(req.Name, req.ParentID)
 	if err != nil {
+		if errors.Is(err, services.ErrNestedCategoryNotSupported) || errors.Is(err, services.ErrEmptyTaxonomyName) {
+			response.Error(c, http.StatusBadRequest, "INVALID_CATEGORY", err.Error())
+			return
+		}
 		response.Error(c, http.StatusInternalServerError, "CATEGORY_CREATE_FAILED", err.Error())
 		return
 	}
@@ -70,6 +75,10 @@ func (h *TaxonomyHandler) CreateTag(c *gin.Context) {
 
 	item, err := h.taxonomyService.CreateTag(req.Name)
 	if err != nil {
+		if errors.Is(err, services.ErrEmptyTaxonomyName) {
+			response.Error(c, http.StatusBadRequest, "INVALID_TAG", err.Error())
+			return
+		}
 		response.Error(c, http.StatusInternalServerError, "TAG_CREATE_FAILED", err.Error())
 		return
 	}
@@ -91,6 +100,10 @@ func (h *TaxonomyHandler) UpdateCategory(c *gin.Context) {
 
 	category, err := h.taxonomyService.UpdateCategory(id, req.Name, req.ParentID)
 	if err != nil {
+		if errors.Is(err, services.ErrNestedCategoryNotSupported) || errors.Is(err, services.ErrEmptyTaxonomyName) {
+			response.Error(c, http.StatusBadRequest, "INVALID_CATEGORY", err.Error())
+			return
+		}
 		response.Error(c, http.StatusInternalServerError, "CATEGORY_UPDATE_FAILED", err.Error())
 		return
 	}

@@ -3,6 +3,7 @@ package models
 import "time"
 
 type Question struct {
+	// CategoryID is the single stable, top-level subject classification for a question.
 	ID                  int64            `gorm:"primaryKey" json:"id"`
 	UserID              int64            `gorm:"not null;default:1;index" json:"userId"`
 	CategoryID          *int64           `gorm:"index" json:"categoryId,omitempty"`

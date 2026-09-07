@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 	"erro-notebook/backend/internal/integrations/ai"
 	"erro-notebook/backend/internal/repository"
 	"erro-notebook/backend/internal/services"
+	"erro-notebook/backend/internal/storage"
 )
 
 func main() {
@@ -39,6 +41,10 @@ func main() {
 		cfg.AIServiceBaseURL,
 		time.Duration(cfg.AIServiceAsyncTimeoutSeconds)*time.Second,
 	)
+	objectStorage, err := storage.NewLocalObjectStorage(cfg.StorageLocalRoot)
+	if err != nil {
+		log.Fatalf("init object storage failed: %v", err)
+	}
 
 	questionRepo := repository.NewQuestionRepository(db)
 	jobRepo := repository.NewJobRepository(db)
@@ -56,9 +62,11 @@ func main() {
 		chatRepo,
 		batchRepo,
 		learningRepo,
+		categoryRepo,
+		tagRepo,
 		aiClient,
 		aiClientAsync,
-		cfg.MaxConcurrentOCR,
+		objectStorage,
 	)
 	jobService := services.NewJobService(jobRepo)
 	taxonomyService := services.NewTaxonomyService(categoryRepo, tagRepo)
@@ -70,6 +78,12 @@ func main() {
 	practiceService := services.NewPracticeService(practiceRepo, questionRepo, learningRepo)
 	practiceHandler := handlers.NewPracticeHandler(practiceService)
 	router := handlers.NewRouter(questionHandler, taxonomyHandler, questionAIHandler, practiceHandler)
+	questionService.StartTaskWorkers(
+		context.Background(),
+		cfg.TaskWorkerCount,
+		time.Duration(cfg.TaskPollIntervalSeconds)*time.Second,
+		time.Duration(cfg.TaskStaleAfterSeconds)*time.Second,
+	)
 
 	addr := ":" + cfg.Port
 	log.Printf("backend server listening on %s", addr)

@@ -103,6 +103,13 @@ export default function ReasoningCenter({
                     {analysis.content.answer || analysis.answer || '暂无'}
                   </p>
                   <p>{analysis.content.summary || '暂无解析摘要'}</p>
+                  {analysis.content.taxonomySuggestion && (analysis.content.taxonomySuggestion.categoryName || analysis.content.taxonomySuggestion.tagNames?.length) ? (
+                    <div className="taxonomy-suggestion" aria-label="AI 分类标签建议">
+                      <span>AI 分类建议（待确认）</span>
+                      {analysis.content.taxonomySuggestion.categoryName ? <strong>{analysis.content.taxonomySuggestion.categoryName}</strong> : null}
+                      {analysis.content.taxonomySuggestion.tagNames?.map((tag) => <em key={tag}>{tag}</em>)}
+                    </div>
+                  ) : null}
                 </div>
                 <div className="analysis-card-actions">
                   <button className="text-button is-highlight" type="button" onClick={onReanalyze} disabled={reanalyzing}>

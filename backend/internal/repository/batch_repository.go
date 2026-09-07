@@ -57,3 +57,14 @@ func (r *BatchRepository) UpdateItem(item *models.BatchImportItem) error {
 	}
 	return nil
 }
+
+func (r *BatchRepository) GetItemByJobID(jobID string) (*models.BatchImportItem, error) {
+	var item models.BatchImportItem
+	if err := r.db.Where("job_id = ?", jobID).First(&item).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("get batch item by job: %w", err)
+	}
+	return &item, nil
+}

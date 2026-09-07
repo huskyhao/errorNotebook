@@ -8,6 +8,8 @@ import (
 	"gorm.io/gorm"
 )
 
+var ErrTagNotFound = errors.New("one or more tag ids do not exist")
+
 type QuestionRepository struct {
 	db *gorm.DB
 }
@@ -114,6 +116,12 @@ func (r *QuestionRepository) Delete(id int64) error {
 		if err := tx.Where("question_id = ?", id).Delete(&models.QuestionLearningState{}).Error; err != nil {
 			return fmt.Errorf("delete learning state: %w", err)
 		}
+		// A question can be referenced by one or more practice sessions. These
+		// links must be removed before deleting the question because the existing
+		// foreign key intentionally prevents deleting a referenced question.
+		if err := tx.Where("question_id = ?", id).Delete(&models.PracticeSessionQuestion{}).Error; err != nil {
+			return fmt.Errorf("delete practice session questions: %w", err)
+		}
 		if err := tx.Delete(&models.Question{}, id).Error; err != nil {
 			return fmt.Errorf("delete question: %w", err)
 		}
@@ -201,10 +209,31 @@ func (r *QuestionRepository) CountUncategorized() (int64, error) {
 
 func (r *QuestionRepository) SetTags(questionID int64, tagIDs []int64) error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
+		uniqueTagIDs := make([]int64, 0, len(tagIDs))
+		seen := make(map[int64]struct{}, len(tagIDs))
+		for _, tagID := range tagIDs {
+			if tagID <= 0 {
+				return ErrTagNotFound
+			}
+			if _, exists := seen[tagID]; exists {
+				continue
+			}
+			seen[tagID] = struct{}{}
+			uniqueTagIDs = append(uniqueTagIDs, tagID)
+		}
+		if len(uniqueTagIDs) > 0 {
+			var count int64
+			if err := tx.Model(&models.Tag{}).Where("id IN ?", uniqueTagIDs).Count(&count).Error; err != nil {
+				return fmt.Errorf("validate question tags: %w", err)
+			}
+			if count != int64(len(uniqueTagIDs)) {
+				return ErrTagNotFound
+			}
+		}
 		if err := tx.Where("question_id = ?", questionID).Delete(&models.QuestionTag{}).Error; err != nil {
 			return fmt.Errorf("delete question tags: %w", err)
 		}
-		for _, tagID := range tagIDs {
+		for _, tagID := range uniqueTagIDs {
 			if err := tx.Create(&models.QuestionTag{QuestionID: questionID, TagID: tagID}).Error; err != nil {
 				return fmt.Errorf("insert question tag: %w", err)
 			}

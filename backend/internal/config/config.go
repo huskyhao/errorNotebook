@@ -10,13 +10,17 @@ import (
 )
 
 type Config struct {
-	Port                          string
-	MySQLDSN                      string
-	AIServiceBaseURL              string
-	AIServiceTimeoutSeconds       int
-	AIServiceAsyncTimeoutSeconds  int
-	MaxConcurrentOCR              int
-	MaxBatchSize                  int
+	Port                         string
+	MySQLDSN                     string
+	AIServiceBaseURL             string
+	AIServiceTimeoutSeconds      int
+	AIServiceAsyncTimeoutSeconds int
+	MaxBatchSize                 int
+	TaskWorkerCount              int
+	TaskStaleAfterSeconds        int
+	TaskPollIntervalSeconds      int
+	StorageBackend               string
+	StorageLocalRoot             string
 }
 
 func Load() (Config, error) {
@@ -30,8 +34,12 @@ func Load() (Config, error) {
 		AIServiceBaseURL:             strings.TrimSpace(os.Getenv("AI_SERVICE_BASE_URL")),
 		AIServiceTimeoutSeconds:      getEnvInt("AI_SERVICE_TIMEOUT_SECONDS", 15),
 		AIServiceAsyncTimeoutSeconds: getEnvInt("AI_SERVICE_ASYNC_TIMEOUT_SECONDS", 300),
-		MaxConcurrentOCR:             getEnvInt("MAX_CONCURRENT_OCR", 3),
 		MaxBatchSize:                 getEnvInt("MAX_BATCH_SIZE", 20),
+		TaskWorkerCount:              getEnvInt("TASK_WORKER_COUNT", 3),
+		TaskStaleAfterSeconds:        getEnvInt("TASK_STALE_AFTER_SECONDS", 600),
+		TaskPollIntervalSeconds:      getEnvInt("TASK_POLL_INTERVAL_SECONDS", 2),
+		StorageBackend:               getEnv("STORAGE_BACKEND", "local"),
+		StorageLocalRoot:             getEnv("STORAGE_LOCAL_ROOT", "uploads"),
 	}
 
 	if cfg.MySQLDSN == "" {

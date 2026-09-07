@@ -33,3 +33,14 @@ func (r *AnalysisRepository) GetLatestByQuestionID(questionID int64) (*models.An
 	}
 	return &analysis, nil
 }
+
+func (r *AnalysisRepository) GetByJobID(jobID string) (*models.Analysis, error) {
+	var analysis models.Analysis
+	if err := r.db.Where("job_id = ?", jobID).First(&analysis).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("get analysis by job: %w", err)
+	}
+	return &analysis, nil
+}

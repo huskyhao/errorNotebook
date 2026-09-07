@@ -21,6 +21,11 @@ _ANALYSIS_JSON_TEMPLATE = """\
   "answer": "正确选项",
   "summary": "题目考查的核心知识点概述",
   "knowledgePoints": ["知识点1", "知识点2"],
+  "taxonomySuggestion": {
+    "categoryName": "稳定的高层学科分类；无法确定时留空",
+    "tagNames": ["细粒度知识点1", "细粒度知识点2"],
+    "confidence": 0.0
+  },
   "steps": ["步骤1：分析题干条件和约束", "步骤2：逐项比对选项"],
   "optionAnalysis": {
     "A": "选项A的分析（为什么对/错）",
@@ -148,6 +153,8 @@ class AnalysisService:
             "如果题目无法完全确定，也要给出保守但结构合法的 JSON。"
             "如果 question.warnings 或 context.structureWarnings 提示 options_incomplete、missing_options_*、llm_refine_failed，"
             "说明题面结构可能不完整；此时必须参考 question.rawText，不要只依据 options 数组判断题目。"
+            "taxonomySuggestion 只能返回建议：categoryName 必须是稳定的高层学科分类，tagNames 只能是细粒度知识点；"
+            "不要把 TCP、UDP 等知识点放进 categoryName，也不要声称建议已经生效。"
         )
         user_prompt = json.dumps(
             {

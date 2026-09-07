@@ -18,6 +18,8 @@ type BatchImportItem struct {
 	ID              int64     `gorm:"primaryKey" json:"id"`
 	BatchID         int64     `gorm:"not null;index" json:"batchId"`
 	QuestionID      int64     `gorm:"not null;index" json:"questionId"`
+	JobID           string    `gorm:"column:job_id;type:varchar(64);index" json:"jobId"`
+	ObjectKey       string    `gorm:"column:object_key;type:varchar(1024)" json:"objectKey"`
 	FileIndex       int       `gorm:"not null" json:"fileIndex"`
 	FileName        string    `gorm:"type:varchar(255)" json:"fileName"`
 	Status          string    `gorm:"type:varchar(32);not null;default:'pending'" json:"status"`

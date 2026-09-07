@@ -138,7 +138,7 @@ All endpoints under `/api/v1`. For full details see [API.md](./API.md).
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/health` | Health check |
-| `POST` | `/api/v1/questions/import` | Import question (image upload or manual text) |
+| `POST` | `/api/v1/questions/import` | Upload an image/manual question and enqueue OCR |
 | `GET` | `/api/v1/questions` | List questions (with filters) |
 | `GET` | `/api/v1/questions/:id` | Get question detail |
 | `PATCH` | `/api/v1/questions/:id` | Update question fields |
@@ -148,6 +148,7 @@ All endpoints under `/api/v1`. For full details see [API.md](./API.md).
 | `GET` | `/api/v1/questions/:id/analysis` | Get latest analysis |
 | `POST` | `/api/v1/questions/:id/chat` | Send a question-scoped chat message and optional image attachments |
 | `GET` | `/api/v1/jobs/:jobId` | Get job status |
+| `POST` | `/api/v1/jobs/:jobId/retry` | Retry a terminal failed job |
 | `GET` | `/api/v1/categories` | List categories |
 | `POST` | `/api/v1/categories` | Create category |
 | `GET` | `/api/v1/tags` | List tags |
@@ -179,7 +180,8 @@ The service and repository layers include unit tests; run the command above befo
 
 ## Current limitations
 
-- Import is synchronous (though job semantics are in place for async migration)
+- Uploaded images use the durable local object-storage adapter by default; an S3/MinIO adapter can be added behind the same interface
+- OCR and analysis run through database-backed workers with automatic retry and lease recovery; a distributed queue is not used yet
 - No auth/authentication
 - Chat messages are persisted per question and forwarded to the Python AI service; an explicit fallback reply is returned when the AI service is unavailable
 - PDF import and paper-splitting APIs are intentionally excluded from the current MVP

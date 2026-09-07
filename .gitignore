@@ -85,4 +85,6 @@ uploads/
 storage/
 **/uploads/
 **/storage/
+!backend/internal/storage/
+!backend/internal/storage/*.go
 data/

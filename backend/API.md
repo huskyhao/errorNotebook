@@ -83,10 +83,10 @@ Python 服务只返回结构化 JSON，不直接写业务库。
 
 说明：
 
-* 图片导入时，Go 创建 `question + job` 后调用 `ai-service` OCR。
+* 图片导入时，Go 先把原图写入对象存储，再创建 `question + job`，不在上传请求中调用 OCR。
 * OCR 成功后回填题干、题型、选项、建议答案、原始 OCR 文本、图片路径等字段。
 * 手动导入会直接创建题目并将 OCR 状态置为 `completed`。
-* 单题导入成功后会触发解析任务，解析在后台 goroutine 中调用 Python 服务。
+* 单题导入成功后会触发解析任务，OCR 和解析均由数据库 worker 在后台调用 Python 服务。
 
 ### 2.2 批量导入
 
@@ -121,7 +121,7 @@ Python 服务只返回结构化 JSON，不直接写业务库。
 说明：
 
 * Go 会先创建批次、题目占位记录和批次明细。
-* 每个文件进入 OCR goroutine，受 `MAX_CONCURRENT_OCR` 并发限制。
+* 每个文件先保存为独立对象并创建 OCR Job，由 `TASK_WORKER_COUNT` 个数据库 worker 按队列处理。
 * 单个文件 OCR 完成后会自动触发解析。
 
 ### 2.3 查询批量导入状态
@@ -226,7 +226,7 @@ Python 服务只返回结构化 JSON，不直接写业务库。
 
 * 删除题目。
 * 删除关联选项、素材、解析记录、聊天记录、任务记录、题目标签关联。
-* 尝试删除本地上传文件目录。
+* 尝试删除题目原图对应的对象存储对象。
 
 成功响应：`204 No Content`
 
@@ -246,6 +246,8 @@ Python 服务只返回结构化 JSON，不直接写业务库。
 
 响应：更新后的题目详情。
 
+分类字段约束：`categoryId` 是题目的唯一学科分类，传正整数只能指向已存在的顶层分类，传 `null` 表示未分类；Go 会拒绝不存在或带父级的分类。
+
 ### 3.2 生成解析
 
 `POST /api/v1/questions/{id}/analyze`
@@ -254,7 +256,7 @@ Python 服务只返回结构化 JSON，不直接写业务库。
 
 * Go 创建 `analyze` job。
 * Go 将题目、选项、用户答案等上下文组装为结构化请求。
-* Go 在后台 goroutine 中调用 `ai-service` 的 `/internal/v1/analyze/question`。
+* Go worker 在领取 analyze Job 后调用 `ai-service` 的 `/internal/v1/analyze/question`，支持自动重试和租约恢复。
 * 成功后写入 `analyses`，并将 `questions.analysis_status` 更新为 `completed`。
 * 失败后将 `questions.analysis_status` 更新为 `failed`，并记录 job 错误。
 
@@ -357,6 +359,7 @@ Python 服务只返回结构化 JSON，不直接写业务库。
 
 * 传入的 `tagIds` 会整体替换该题当前标签关联。
 * 传空数组表示清空标签。
+* Go 会去重并校验所有 tag ID；不存在的标签返回 `400 INVALID_TAG_IDS`。
 
 响应：更新后的题目详情。
 
@@ -434,10 +437,11 @@ Python 服务只返回结构化 JSON，不直接写业务库。
 
 ```json
 {
-  "name": "数学",
-  "parentId": null
+  "name": "计算机网络"
 }
 ```
+
+分类是每题唯一、稳定的顶层学科维度；当前不创建子分类。`parentId` 仅为旧数据兼容保留，创建/更新时传入非空值会返回 `400 INVALID_CATEGORY`。TCP、UDP 等细粒度知识点应通过标签接口管理。
 
 响应：创建后的分类。
 
@@ -449,8 +453,7 @@ Python 服务只返回结构化 JSON，不直接写业务库。
 
 ```json
 {
-  "name": "高中数学",
-  "parentId": null
+  "name": "计算机网络"
 }
 ```
 
@@ -467,6 +470,20 @@ Python 服务只返回结构化 JSON，不直接写业务库。
 * 属于该分类的题目会被置为未分类。
 
 成功响应：`204 No Content`
+
+### 6.6 AI 分类标签建议
+
+AI 解析结果可以包含可选的 `content.taxonomySuggestion`：
+
+```json
+{
+  "categoryName": "计算机网络",
+  "tagNames": ["TCP", "拥塞控制"],
+  "confidence": 0.86
+}
+```
+
+该字段只是 Python AI 的建议，不代表已生效。Go 负责保存解析记录、校验候选分类/标签，后续由用户确认后调用题目分类和标签接口完成最终变更；前端不直接访问 Python。
 
 ## 7. 做题会话
 
@@ -606,12 +623,22 @@ Python 服务只返回结构化 JSON，不直接写业务库。
 * `status`
 * `errorCode`
 * `errorMessage`
+* `attempts`
+* `maxAttempts`
+* `processingStage`
+* `nextRunAt`
+* `lockedAt`
 * `startedAt`
 * `finishedAt`
 * `createdAt`
 * `updatedAt`
 
 任务状态：`pending` / `processing` / `completed` / `failed` / `needs_review`。
+
+重试失败任务：
+
+* `POST /api/v1/jobs/{jobId}/retry`：重置失败 Job 并重新入队。
+* `POST /api/v1/questions/{id}/ocr/retry`：重试该题最近一次失败的 OCR Job。
 
 ## 9. 健康检查与内部 AI 代理
 
@@ -634,6 +661,7 @@ Python 服务只返回结构化 JSON，不直接写业务库。
 
 * 目前尚未接入真实鉴权，业务用户固定为 `1`。
 * PDF 导入、试卷拆题和批次校对接口已从 MVP 移除；当前稳定范围是图片导入和手动文本导入。
-* 批量导入已经异步处理 OCR 和解析，但查询粒度仍以批次明细状态为主。
+* 图片先写入持久化对象存储，再由数据库 worker 异步处理 OCR 和解析；默认适配器为本地对象存储，后续可替换为 S3/MinIO。
+* Worker 使用数据库租约、自动退避重试和过期任务接管；暂未引入独立消息队列。
 * 分类树当前返回扁平节点数组，不在后端递归嵌套。
-* 做题会话已支持多题型；学习状态、错题重做策略与推荐练习属于下一阶段。
+* 做题会话已支持多题型；学习状态与五类推荐练习已接入当前 MVP，推荐策略仍是简单规则，后续再迭代。

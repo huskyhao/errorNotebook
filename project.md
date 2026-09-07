@@ -168,20 +168,16 @@ MVP 保留八类题型：`single_choice`、`multiple_choice`、`true_false`、`f
 
 ## 5.4 分类与标签
 
-建议把分类拆成两层：
+分类与标签只承担不同层级的职责：
 
-* 系统分类：学科、章节、题型、知识点
-* 用户标签：自定义标签、来源标签、复习标签
+* `category`：每道题最多一个，表示稳定、较高层级的学科分类，例如计算机网络、计算机组成原理、操作系统、数据结构。
+* `tags`：每道题可有多个，表示细粒度知识点或检索维度，例如 TCP、UDP、HTTP、拥塞控制、408、真题。
 
-例如：
+`category_id` 保持 Question 上的单值外键，不引入 Question–Category 多对多表。当前 MVP 的分类不创建子分类，`parent_id` 仅为兼容历史数据保留；新建和更新分类必须是顶层学科。TCP、UDP 等知识点不得作为 category，应该作为 tags。
 
-* 学科：操作系统
-* 章节：进程与线程
-* 知识点：系统调用
-* 状态：待校准 / 已入库 / 已掌握
-* 标签：408、真题、易错、二刷
+前端详情区明确显示“学科分类（单选）”与“知识点标签（可多选）”。人工可以随时修改；标签接口整体替换该题标签关联，并由 Go 去重、校验 ID 后持久化。分类删除不会删除题目，题目会移动到未分类；`全部题目` 和 `未分类` 属于系统视图。
 
-分类支持删除。删除用户创建的分类不会删除题目，分类下题目统一移动到未分类；`全部题目` 和 `未分类` 属于系统视图，不能作为可删除分类处理。
+AI 自动分类的边界：Python AI 只返回可选的 `taxonomySuggestion`（`categoryName`、`tagNames`、可选 `confidence`），不直接写库、不直接决定生效结果。Go 接收并保存建议，负责校验 category 是否为现有顶层分类、标签是否为合法标签；后续由用户确认后通过 Go 的题目/标签接口最终生效。本轮不自动创建分类、不把知识点升级为分类。
 
 ## 5.5 AI 解析
 
@@ -748,6 +744,26 @@ Go 接到错误后：
 * `GET /api/v1/tags`
 * `POST /api/v1/tags`
 
+约束：
+
+* category 是单值学科维度；题目更新时只能设置一个已存在的顶层 category，传 `null` 表示未分类。
+* tags 是多值知识点维度；`POST /api/v1/questions/{id}/tags` 整体替换标签集合，Go 会去重并拒绝不存在的 tag ID。
+* 分类创建/更新不接受 `parentId`，避免把章节或 TCP、UDP 等知识点误建成 category。
+
+AI 建议契约（随解析结果返回的可选字段，当前只保存建议，不自动应用）：
+
+```json
+{
+  "taxonomySuggestion": {
+    "categoryName": "计算机网络",
+    "tagNames": ["TCP", "拥塞控制"],
+    "confidence": 0.86
+  }
+}
+```
+
+Python 只负责产生这段建议；Go 负责将其纳入解析记录、校验候选是否存在，并在用户确认后通过上述分类/标签业务接口生效。
+
 ## 11.11 学习状态与推荐练习
 
 当前实现：
@@ -789,7 +805,7 @@ Go 接到错误后：
 | id | bigint | 主键 |
 | user_id | bigint | 所属用户 |
 | name | varchar | 分类名 |
-| parent_id | bigint nullable | 父分类 |
+| parent_id | bigint nullable | 历史兼容字段；当前新建/更新必须为 null，分类表示顶层学科 |
 | created_at | timestamp | 创建时间 |
 
 ## 12.3 questions
@@ -872,7 +888,7 @@ Go 接到错误后：
 
 ## 12.9 tags / question_tags
 
-支持多对多标签关系，便于后续检索和复习策略扩展。
+`tags` 与 `question_tags` 组成 Question 到细粒度知识点的多对多关系。一个 Question 只能通过 `questions.category_id` 绑定一个 category，但可以绑定多个 tag。category 用于稳定的学科分组，tag 用于知识点检索、复习推荐和 AI 建议；两者不能混用。
 
 ## 12.10 question_learning_states
 

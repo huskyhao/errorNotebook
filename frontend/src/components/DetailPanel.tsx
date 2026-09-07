@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { analysisStatusLabel, cx, ocrStatusLabel, questionTypeLabel, QUESTION_TYPE_OPTIONS } from '../utils';
-import type { QuestionItem, AnalysisItem, DetailOption, AnalysisSection, CategoryTreeNode, TagItem, OptionItem, LearningState } from '../types';
+import type { QuestionItem, AnalysisItem, DetailOption, AnalysisSection, CategoryTreeNode, TagItem, OptionItem } from '../types';
 import {
   ChevronLeftIcon,
   ChevronRightIcon,
@@ -32,6 +32,8 @@ interface DetailPanelProps {
   draftOptions: OptionItem[];
   setDraftOptions: (value: OptionItem[]) => void;
   onSaveQuestion: () => void;
+  onRetryOCR: () => void;
+  onRetryAnalysis: () => void;
   detailOpen: boolean;
   onToggleDetail: () => void;
   showAnswer: boolean;
@@ -44,10 +46,6 @@ interface DetailPanelProps {
   onToggleFavorite: () => void;
   onCategoryChange: (categoryId: number | null) => void;
   onTagsChange: (tagIds: number[]) => void;
-  learningDraft: LearningState | null;
-  setLearningDraft: (value: LearningState | null) => void;
-  onSaveLearningState: () => void;
-  savingLearning: boolean;
 }
 
 export default function DetailPanel({
@@ -64,6 +62,8 @@ export default function DetailPanel({
   draftOptions,
   setDraftOptions,
   onSaveQuestion,
+  onRetryOCR,
+  onRetryAnalysis,
   detailOpen,
   onToggleDetail,
   showAnswer,
@@ -76,10 +76,6 @@ export default function DetailPanel({
   onToggleFavorite,
   onCategoryChange,
   onTagsChange,
-  learningDraft,
-  setLearningDraft,
-  onSaveLearningState,
-  savingLearning,
 }: DetailPanelProps) {
   const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({
     steps: true,
@@ -189,11 +185,6 @@ export default function DetailPanel({
     setDraftOptions(draftOptions.filter((_, idx) => idx !== index).map((item, idx) => ({ ...item, sortOrder: idx + 1 })));
   }
 
-  function updateLearningPatch(patch: Partial<LearningState>) {
-    if (!learningDraft) return;
-    setLearningDraft({ ...learningDraft, ...patch });
-  }
-
   return (
     <aside className={cx('panel panel--detail', !detailOpen && 'collapsed')} aria-label="题目详情">
       <div className="panel-reveal">
@@ -262,6 +253,12 @@ export default function DetailPanel({
                 <span className={cx('status-pill', question?.analysisStatus === 'completed' && 'is-success')}>
                   {analysisStatusLabel(question?.analysisStatus)}
                 </span>
+                {question?.ocrStatus === 'failed' ? (
+                  <button className="text-button" type="button" onClick={onRetryOCR}>重试识别</button>
+                ) : null}
+                {question?.analysisStatus === 'failed' ? (
+                  <button className="text-button" type="button" onClick={onRetryAnalysis}>重试解析</button>
+                ) : null}
               </div>
             </div>
 
@@ -416,49 +413,6 @@ export default function DetailPanel({
                 {section.expanded ? <div className="accordion-panel">{section.body}</div> : null}
               </article>
             ))}
-          </section>
-          <section className="analysis-panel learning-panel">
-            <div className="learning-panel-head">
-              <h3 className="analysis-panel-title">学习状态</h3>
-              <button className="text-button" type="button" onClick={onSaveLearningState} disabled={!learningDraft || savingLearning}>
-                {savingLearning ? '保存中...' : '保存'}
-              </button>
-            </div>
-            {learningDraft ? (
-              <div className="learning-form">
-                <div className="learning-metrics">
-                  <span>掌握 {learningDraft.masteryLevel}/5</span>
-                  <span>错 {learningDraft.wrongCount} 次</span>
-                  <span>连对 {learningDraft.correctStreak}</span>
-                </div>
-                <label className="form-field">
-                  <span className="form-label">错因</span>
-                  <textarea
-                    className="form-input form-textarea"
-                    value={learningDraft.mistakeReason}
-                    onChange={(e) => updateLearningPatch({ mistakeReason: e.target.value })}
-                  />
-                </label>
-                <label className="form-field">
-                  <span className="form-label">薄弱标签（逗号分隔）</span>
-                  <input
-                    className="form-input"
-                    value={learningDraft.weaknessTags.join(', ')}
-                    onChange={(e) => updateLearningPatch({ weaknessTags: e.target.value.split(',').map((item) => item.trim()).filter(Boolean) })}
-                  />
-                </label>
-                <label className="form-field">
-                  <span className="form-label">复习建议（每行一条）</span>
-                  <textarea
-                    className="form-input form-textarea"
-                    value={learningDraft.reviewAdvice.join('\n')}
-                    onChange={(e) => updateLearningPatch({ reviewAdvice: e.target.value.split('\n').map((item) => item.trim()).filter(Boolean) })}
-                  />
-                </label>
-              </div>
-            ) : (
-              <div className="empty-state">暂无学习状态</div>
-            )}
           </section>
           </>
           )}

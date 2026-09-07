@@ -56,8 +56,6 @@ export default function QuestionWorkbenchPage() {
   const [draftAnswer, setDraftAnswer] = useState('');
   const [draftQuestionType, setDraftQuestionType] = useState('subjective');
   const [draftOptions, setDraftOptions] = useState<OptionItem[]>([]);
-  const [learningDraft, setLearningDraft] = useState<LearningState | null>(null);
-  const [savingLearning, setSavingLearning] = useState(false);
   const [generatingLearning, setGeneratingLearning] = useState(false);
   const [error, setError] = useState('');
   const [deletingId, setDeletingId] = useState<number | null>(null);
@@ -129,11 +127,6 @@ export default function QuestionWorkbenchPage() {
     setDraftAnswer(detail.correctAnswer ?? '');
     setDraftQuestionType(detail.questionType);
     setDraftOptions([...(detail.options ?? [])].sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0)));
-    const state = detail.learningState ?? await requestJson<LearningState>(`/questions/${questionId}/learning-state`).catch(() => null);
-    setLearningDraft(state);
-    if (state) {
-      setSelectedQuestion((prev) => (prev?.id === questionId ? { ...prev, learningState: state } : prev));
-    }
     const analysisResult = await requestJson<AnalysisItem>(`/questions/${questionId}/analysis`).catch(() => null);
     setAnalysis(analysisResult);
     const messages = await requestJson<ChatMessage[]>(`/questions/${questionId}/chat`).catch(() => []);
@@ -208,6 +201,20 @@ export default function QuestionWorkbenchPage() {
           await new Promise((r) => setTimeout(r, 5000));
           const q = await requestJson<QuestionItem>(`/questions/${result.questionId}`).catch(() => null);
           if (!q) break;
+          if (q.ocrStatus === 'failed') {
+            setError('OCR 识别失败，可在题目详情中重试识别');
+            setSelectedQuestion(q);
+            await loadQuestions();
+            setImporting(false);
+            return;
+          }
+          if (q.ocrStatus === 'needs_review') {
+            setError('OCR 已完成，但题面需要人工校准');
+            setSelectedQuestion(q);
+            await loadQuestions();
+            setImporting(false);
+            return;
+          }
           if (q.analysisStatus === 'completed') {
             const analysisResult = await requestJson<AnalysisItem>(`/questions/${result.questionId}/analysis`).catch(() => null);
             setAnalysis(analysisResult);
@@ -298,13 +305,14 @@ export default function QuestionWorkbenchPage() {
     }
   }
 
-  async function handleSendMessage() {
+  async function handleSendMessage(messageOverride?: string, attachmentsOverride?: File[]) {
     if (!selectedQuestion) return;
-    const message = reply.trim();
-    if (!message && chatAttachments.length === 0) return;
+    const message = (messageOverride ?? reply).trim();
+    const filesToSend = attachmentsOverride ?? chatAttachments;
+    if (!message && filesToSend.length === 0) return;
     const questionId = selectedQuestion.id;
     const createdAt = new Date().toISOString();
-    const attachmentNames = chatAttachments.map((file) => file.name);
+    const attachmentNames = filesToSend.map((file) => file.name);
     const localUserMessage: ChatMessage = {
       id: -Date.now(),
       questionId,
@@ -323,7 +331,6 @@ export default function QuestionWorkbenchPage() {
     };
 
     setReply('');
-    const filesToSend = chatAttachments;
     setChatAttachments([]);
     setError('');
     setSendingMessage(true);
@@ -372,8 +379,8 @@ export default function QuestionWorkbenchPage() {
 
   function handleRetryMessage(message: ChatMessage) {
     const text = message.message.replace(/\n\[附图\].*$/s, '').trim();
-    setReply(text);
     setError('');
+    void handleSendMessage(text, chatAttachments);
   }
 
   function handleRemoveChatAttachment(index: number) {
@@ -414,6 +421,19 @@ export default function QuestionWorkbenchPage() {
     }
   }
 
+  async function handleRetryOCR() {
+    if (!selectedQuestion) return;
+    setError('');
+    try {
+      const questionId = selectedQuestion.id;
+      await requestJson(`/questions/${questionId}/ocr/retry`, { method: 'POST', body: JSON.stringify({}) });
+      await loadQuestionDetail(questionId);
+      await loadQuestions();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '重试识别失败');
+    }
+  }
+
   async function handleSaveQuestion() {
     if (!selectedQuestion) return;
     const questionId = selectedQuestion.id;
@@ -448,8 +468,8 @@ export default function QuestionWorkbenchPage() {
         method: 'POST',
         body: JSON.stringify({}),
       });
-      setLearningDraft(state);
       setSelectedQuestion((prev) => (prev ? { ...prev, learningState: state } : prev));
+      await loadQuestions();
     } catch (err) {
       setError(err instanceof Error ? err.message : '错因归纳失败');
     } finally {
@@ -457,29 +477,6 @@ export default function QuestionWorkbenchPage() {
     }
   }
 
-  async function handleSaveLearningState() {
-    if (!selectedQuestion || !learningDraft) return;
-    setSavingLearning(true);
-    setError('');
-    try {
-      const state = await requestJson<LearningState>(`/questions/${selectedQuestion.id}/learning-state`, {
-        method: 'PATCH',
-        body: JSON.stringify({
-          masteryLevel: learningDraft.masteryLevel,
-          mistakeReason: learningDraft.mistakeReason,
-          weaknessTags: learningDraft.weaknessTags,
-          reviewAdvice: learningDraft.reviewAdvice,
-        }),
-      });
-      setLearningDraft(state);
-      setSelectedQuestion((prev) => (prev ? { ...prev, learningState: state } : prev));
-      await loadQuestions();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : '学习状态保存失败');
-    } finally {
-      setSavingLearning(false);
-    }
-  }
 
   async function handleSelectOption(optionKey: string) {
     if (!selectedQuestion) return;
@@ -721,6 +718,8 @@ export default function QuestionWorkbenchPage() {
           draftOptions={draftOptions}
           setDraftOptions={setDraftOptions}
           onSaveQuestion={handleSaveQuestion}
+          onRetryOCR={handleRetryOCR}
+          onRetryAnalysis={handleReanalyze}
           detailOpen={detailOpen}
           onToggleDetail={() => setDetailOpen((v) => !v)}
           showAnswer={!practiceMode[selectedQuestion?.id ?? 0]}
@@ -752,10 +751,6 @@ export default function QuestionWorkbenchPage() {
           }}
           onCategoryChange={handleUpdateCategory}
           onTagsChange={handleTagsChange}
-          learningDraft={learningDraft}
-          setLearningDraft={setLearningDraft}
-          onSaveLearningState={handleSaveLearningState}
-          savingLearning={savingLearning}
         />
       </div>
 
