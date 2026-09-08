@@ -36,6 +36,9 @@ func NewRouter(
 			api.POST("/questions/:id/learning-state/generate", questionHandler.GenerateLearningState)
 			api.POST("/questions/:id/taxonomy-suggestion/apply", questionHandler.ApplyTaxonomySuggestion)
 			api.POST("/questions/:id/agent-actions", questionHandler.RunAgentAction)
+			api.GET("/questions/:id/ai-proposals/:proposalId", questionHandler.GetAIProposal)
+			api.POST("/questions/:id/ai-proposals/:proposalId/confirm", questionHandler.ConfirmSimilarProposal)
+			api.POST("/questions/:id/ai-proposals/:proposalId/reject", questionHandler.RejectAIProposal)
 			api.POST("/questions/:id/chat", questionHandler.CreateChatMessage)
 			api.GET("/questions/:id/chat", questionHandler.GetChatMessages)
 			api.POST("/questions/:id/favorite", questionHandler.ToggleFavorite)
@@ -57,6 +60,9 @@ func NewRouter(
 				sessions.POST("/:id/skip", practiceHandler.SkipQuestion)
 				sessions.POST("/:id/submit", practiceHandler.SubmitSession)
 				sessions.GET("/:id/results", practiceHandler.GetResults)
+				sessions.POST("/:id/questions/:orderIndex/grade-suggestion", practiceHandler.GenerateGradeSuggestion)
+				sessions.GET("/:id/questions/:orderIndex/grade-suggestion/:proposalId", practiceHandler.GetGradeSuggestion)
+				sessions.POST("/:id/questions/:orderIndex/grade-suggestion/confirm", practiceHandler.ConfirmGradeSuggestion)
 			}
 		}
 

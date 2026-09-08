@@ -686,6 +686,26 @@ Go 根据题目、作答、最新解析、必要对话和现有分类/标签候�
 
 Python 侧动作契约、错误结构、multipart 解析示例和离线评测见 `ai-service/README.md` 与 `ai-service/evals/`。当前未配置真实 provider 时，测试结果只代表 mock/契约链路。
 
+## 10.3 P1 AI proposal 与图片追问
+
+`POST /api/v1/questions/{id}/agent-actions` 新增 `generate_similar_question`。请求可带 `params.sourceFingerprint`、`targetDifficulty`、`questionType` 和 `allowedKnowledgePoints`；Go 会把 Python 返回的单题候选持久化为 `AIProposal(status=pending)`。候选只在确认后创建正式 `Question(sourceType=ai_generated)`：
+
+* `GET /api/v1/questions/{id}/ai-proposals/{proposalId}` 查看候选
+* `POST /api/v1/questions/{id}/ai-proposals/{proposalId}/confirm` 幂等确认创建
+* `POST /api/v1/questions/{id}/ai-proposals/{proposalId}/reject` 放弃候选
+
+确认会重新校验源题指纹、proposal 状态和题型/选项答案契约；过期、拒绝、源题变更均返回 `409 PROPOSAL_NOT_APPLICABLE`，重复确认返回同一 `createdQuestionId`。
+
+`POST /api/v1/questions/{id}/chat` 继续兼容旧 JSON；带图使用 multipart `message` + 重复 `attachments`。Go 先把图片保存到服务端对象存储，再读取已校验的实际字节，以内部 multipart `payload` + `files` 调用 Python；AI 失败只保留用户消息和附件元数据，不写伪成功 assistant 消息。
+
+## 10.4 P1 主观题辅助批改
+
+* `POST /api/v1/practice-sessions/{id}/questions/{orderIndex}/grade-suggestion`：请求 `{ "params": { "maxScore": 10, "rubric": ["观点", "依据"] } }`，返回 Python 类型化评分建议并保存 pending proposal。
+* `GET /api/v1/practice-sessions/{id}/questions/{orderIndex}/grade-suggestion/{proposalId}`：查看同一作答版本的评分建议。
+* `POST /api/v1/practice-sessions/{id}/questions/{orderIndex}/grade-suggestion/confirm`：请求 `{ "proposalId": "...", "score": 6, "feedback": "..." }`，Go 重新校验作答指纹后应用；重复确认幂等。
+
+评分建议包含 `suggestedScore`、`maxScore`、`criteriaResults`、`strengths`、`missingPoints`、`feedback`、`evidence`、`uncertainties`、`confidence` 和 `requiresHumanReview`。AI 不直接改变最终成绩、掌握度或错题统计；界面使用“AI 建议分数”，最终采用必须人工确认。
+
 ## 11. 当前限制
 
 * 目前尚未接入真实鉴权，业务用户固定为 `1`。

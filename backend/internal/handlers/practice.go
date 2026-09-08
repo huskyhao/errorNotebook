@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"encoding/json"
 	"net/http"
 	"strconv"
 	"time"
@@ -12,6 +13,92 @@ import (
 
 type PracticeHandler struct {
 	practiceService *services.PracticeService
+}
+
+type gradeSuggestionRequest struct {
+	Params map[string]any `json:"params"`
+}
+type confirmGradeRequest struct {
+	ProposalID string   `json:"proposalId" binding:"required"`
+	Score      *float64 `json:"score"`
+	Feedback   *string  `json:"feedback"`
+}
+
+func (h *PracticeHandler) GenerateGradeSuggestion(c *gin.Context) {
+	sessionID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		response.Error(c, http.StatusBadRequest, "INVALID_ID", "invalid session id")
+		return
+	}
+	orderIndex, err := strconv.Atoi(c.Param("orderIndex"))
+	if err != nil {
+		response.Error(c, http.StatusBadRequest, "INVALID_ORDER_INDEX", "invalid orderIndex")
+		return
+	}
+	var req gradeSuggestionRequest
+	if c.Request.ContentLength != 0 {
+		if err := c.ShouldBindJSON(&req); err != nil {
+			response.Error(c, http.StatusBadRequest, "INVALID_REQUEST", err.Error())
+			return
+		}
+	}
+	result, err := h.practiceService.GenerateGradeSuggestion(c.Request.Context(), sessionID, orderIndex, req.Params)
+	if err != nil {
+		response.Error(c, http.StatusBadRequest, "GRADE_SUGGESTION_FAILED", err.Error())
+		return
+	}
+	response.OK(c, result)
+}
+
+func (h *PracticeHandler) ConfirmGradeSuggestion(c *gin.Context) {
+	sessionID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		response.Error(c, http.StatusBadRequest, "INVALID_ID", "invalid session id")
+		return
+	}
+	orderIndex, err := strconv.Atoi(c.Param("orderIndex"))
+	if err != nil {
+		response.Error(c, http.StatusBadRequest, "INVALID_ORDER_INDEX", "invalid orderIndex")
+		return
+	}
+	var req confirmGradeRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.Error(c, http.StatusBadRequest, "INVALID_REQUEST", err.Error())
+		return
+	}
+	if err := h.practiceService.ConfirmGradeSuggestion(c.Request.Context(), sessionID, orderIndex, req.ProposalID, req.Score, req.Feedback); err != nil {
+		response.Error(c, http.StatusConflict, "GRADE_CONFIRM_FAILED", err.Error())
+		return
+	}
+	response.OK(c, gin.H{"status": "applied", "proposalId": req.ProposalID})
+}
+
+func (h *PracticeHandler) GetGradeSuggestion(c *gin.Context) {
+	sessionID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		response.Error(c, http.StatusBadRequest, "INVALID_ID", "invalid session id")
+		return
+	}
+	orderIndex, err := strconv.Atoi(c.Param("orderIndex"))
+	if err != nil {
+		response.Error(c, http.StatusBadRequest, "INVALID_ORDER_INDEX", "invalid orderIndex")
+		return
+	}
+	item, err := h.practiceService.GetSessionQuestion(sessionID, orderIndex)
+	if err != nil || item == nil {
+		response.Error(c, http.StatusNotFound, "PRACTICE_QUESTION_NOT_FOUND", "question not found in session")
+		return
+	}
+	proposal, err := h.practiceService.GetGradeSuggestion(c.Param("proposalId"), item.QuestionID)
+	if err != nil || proposal == nil {
+		response.Error(c, http.StatusNotFound, "PROPOSAL_NOT_FOUND", "grading suggestion not found")
+		return
+	}
+	var content any
+	if json.Unmarshal([]byte(proposal.ContentJSON), &content) != nil {
+		content = map[string]any{}
+	}
+	response.OK(c, gin.H{"proposalId": proposal.ProposalID, "status": proposal.Status, "content": content, "expiresAt": proposal.ExpiresAt})
 }
 
 func (h *PracticeHandler) GetPracticeRecommendations(c *gin.Context) {

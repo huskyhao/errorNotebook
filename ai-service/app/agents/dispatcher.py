@@ -17,6 +17,10 @@ from app.schemas.agent import (
     DiagnoseMistakeResult,
     ExplainAlternativeResult,
     HintResult,
+    GradeSubjectiveParams,
+    GradeSubjectiveResult,
+    SimilarQuestionParams,
+    SimilarQuestionResult,
     SuggestTaxonomyResult,
 )
 from app.schemas.analysis import TaxonomySuggestion
@@ -57,6 +61,10 @@ class AgentDispatcher:
             if isinstance(result, DiagnoseMistakeResult) and result.reasonType == "证据不足":
                 response_status = "needs_review"
             if isinstance(result, HintResult) and result.revealsAnswer:
+                response_status = "needs_review"
+            if isinstance(result, SimilarQuestionResult) and result.qualityStatus == "needs_review":
+                response_status = "needs_review"
+            if isinstance(result, GradeSubjectiveResult) and result.requiresHumanReview:
                 response_status = "needs_review"
             response = AgentActionResponse(
                 traceId=request.traceId,
@@ -142,6 +150,45 @@ class AgentDispatcher:
                     status="needs_input", warnings=["hint_level_must_be_1_2_or_3"],
                     meta={"requiredFields": ["params.hintLevel"]},
                 )
+        if request.action == "generate_similar_question":
+            try:
+                SimilarQuestionParams.model_validate(request.params)
+            except ValidationError:
+                return AgentActionResponse(
+                    traceId=request.traceId, questionId=request.questionId, action=request.action,
+                    status="needs_input", warnings=["invalid_similar_question_params"],
+                    meta={"requiredFields": ["params.sourceFingerprint"]},
+                )
+            if not request.context.contentFingerprint:
+                return AgentActionResponse(
+                    traceId=request.traceId, questionId=request.questionId, action=request.action,
+                    status="needs_input", warnings=["missing_source_fingerprint"],
+                    meta={"requiredFields": ["context.contentFingerprint"]},
+                )
+        if request.action == "grade_subjective_answer":
+            if request.context.question.questionType not in {"subjective", "short_answer", "essay", "calculation"}:
+                return AgentActionResponse(
+                    traceId=request.traceId, questionId=request.questionId, action=request.action,
+                    status="needs_input", warnings=["objective_question_not_supported"],
+                )
+            if not (request.context.latestAnswer or "").strip():
+                return AgentActionResponse(
+                    traceId=request.traceId, questionId=request.questionId, action=request.action,
+                    status="needs_input", warnings=["missing_user_answer"],
+                )
+            try:
+                grade_params = GradeSubjectiveParams.model_validate(request.params)
+            except ValidationError:
+                return AgentActionResponse(
+                    traceId=request.traceId, questionId=request.questionId, action=request.action,
+                    status="needs_input", warnings=["missing_grading_basis"],
+                    meta={"requiredFields": ["params.maxScore", "params.rubric|standardAnswer|referenceAnalysis|scoringPoints"]},
+                )
+            if not any([grade_params.rubric, grade_params.standardAnswer, grade_params.referenceAnalysis, grade_params.scoringPoints]):
+                return AgentActionResponse(
+                    traceId=request.traceId, questionId=request.questionId, action=request.action,
+                    status="needs_input", warnings=["missing_grading_basis"],
+                )
         return None
 
     def _trim_context(self, request: AgentActionRequest) -> list[str]:
@@ -175,6 +222,8 @@ class AgentDispatcher:
             "explain_alternative": ExplainAlternativeResult,
             "hint": HintResult,
             "suggest_taxonomy": SuggestTaxonomyResult,
+            "generate_similar_question": SimilarQuestionResult,
+            "grade_subjective_answer": GradeSubjectiveResult,
         }
         schema = schemas[action]
         return schema, json.dumps(schema.model_json_schema(), ensure_ascii=False)
@@ -213,7 +262,36 @@ class AgentDispatcher:
                 result.revealsAnswer = True
             elif result.hintLevel == 1 and result.revealsAnswer:
                 result.revealsAnswer = False
+        if request.action == "generate_similar_question":
+            if result.sourceFingerprint != request.context.contentFingerprint:
+                result.qualityStatus = "needs_review"
+                result.warnings.append("source_fingerprint_mismatch")
+            option_keys = [item.key for item in result.options]
+            if len(option_keys) != len(set(option_keys)):
+                result.qualityStatus = "needs_review"
+                result.warnings.append("duplicate_option_keys")
+            if result.questionType in {"single_choice", "multiple_choice", "true_false"}:
+                keys = set(option_keys)
+                answers = {item.strip() for item in result.answer.split(",") if item.strip()}
+                if not answers or not answers.issubset(keys):
+                    result.qualityStatus = "needs_review"
+                    result.warnings.append("answer_not_in_options")
+            if AgentDispatcher._mechanical_copy(result.stem, request.context.question.stem):
+                result.qualityStatus = "needs_review"
+                result.warnings.append("mechanical_copy_of_source")
+        if request.action == "grade_subjective_answer":
+            if result.maxScore != GradeSubjectiveParams.model_validate(request.params).maxScore:
+                raise ValueError("maxScore does not match request")
+            if result.uncertainties or not result.evidence:
+                result.requiresHumanReview = True
         return result
+
+
+    @staticmethod
+    def _mechanical_copy(candidate: str, source: str) -> bool:
+        """Catch exact and number/option-order-only copies without judging content."""
+        normalize = lambda value: re.sub(r"[\s\W_]+", "", re.sub(r"\d+(?:\.\d+)?", "#", value.casefold()))
+        return bool(candidate.strip() and normalize(candidate) == normalize(source))
 
     @staticmethod
     def _mock(request: AgentActionRequest) -> BaseModel:
@@ -239,14 +317,51 @@ class AgentDispatcher:
             level = int(request.params.get("hintLevel", 1))
             hints = {1: "先找出题干要求判断的对象和核心限定条件。", 2: "把限定条件逐项代入，并排除不满足条件的选项。", 3: "完成关键计算或逐项验证后，再与参考答案核对。"}
             return HintResult(hintLevel=level, hint=hints[level], nextQuestion="题干中哪个条件最能缩小答案范围？", revealsAnswer=False)
-        return SuggestTaxonomyResult(taxonomySuggestion=TaxonomySuggestion(categoryName=None, tagNames=[], confidence=None), reason="mock 模式不替用户创建或应用分类标签。")
+        if request.action == "suggest_taxonomy":
+            category = request.context.categoryCandidates[0] if request.context.categoryCandidates else None
+            tags = request.context.tagCandidates[:2]
+            return SuggestTaxonomyResult(
+                taxonomySuggestion=TaxonomySuggestion(categoryName=category, tagNames=tags, confidence=0.6 if category or tags else None),
+                reason="mock 仅从 Go 提供的候选中生成建议，仍需用户确认。" if category or tags else "没有可用的候选分类或标签。",
+            )
+        if request.action == "generate_similar_question":
+            params = SimilarQuestionParams.model_validate(request.params)
+            q = context.question
+            qtype = params.questionType or q.questionType
+            options = [item.model_copy() for item in q.options]
+            if options:
+                options[0].content = options[0].content + "（变式）"
+            return SimilarQuestionResult(
+                proposalId=str(request.params.get("proposalId") or f"proposal_{request.questionId}_{request.context.contentFingerprint[-12:]}"),
+                sourceQuestionId=request.questionId, sourceFingerprint=context.contentFingerprint or params.sourceFingerprint or "unknown",
+                stem=f"变式题：{q.stem}", questionType=qtype, options=options,
+                answer=q.suggestedAnswer or (options[0].key if options else ""),
+                analysis="先识别题干条件，再使用与原题不同的路径验证结论。",
+                knowledgePoints=params.allowedKnowledgePoints or ["题干条件识别"],
+                variationStrategy="改变情境并保留核心知识点，避免机械复制。",
+                warnings=["mock_result_requires_review"], qualityStatus="needs_review",
+            )
+        params = GradeSubjectiveParams.model_validate(request.params)
+        score = params.maxScore * 0.6
+        criterion_names = params.rubric or params.scoringPoints or ["论证完整性"]
+        each_max = params.maxScore / len(criterion_names)
+        criteria = [
+            {"name": name, "maxScore": each_max, "score": each_max * 0.6, "evidence": ["userAnswer:provided"]}
+            for name in criterion_names
+        ]
+        return GradeSubjectiveResult(
+            suggestedScore=score, maxScore=params.maxScore, criteriaResults=criteria,
+            strengths=["已提交作答内容"], missingPoints=["需要人工核对关键评分点"],
+            feedback="这是可供人工确认的评分建议，不是最终成绩。", evidence=["userAnswer:provided"],
+            uncertainties=["mock 评分未经过真实教师复核"], confidence=0.4, requiresHumanReview=True,
+        )
 
     @staticmethod
     def _meta(request: AgentActionRequest, started: float, *, attempts: int, source: str) -> dict[str, Any]:
         return {
             "provider": "mock" if source == "mock" else (settings.openai_base_url or "openai_compatible"),
             "model": None if source == "mock" else settings.openai_model,
-            "promptVersion": "agent-p0-v1",
+            "promptVersion": "agent-p1-v1",
             "durationMs": int((time.perf_counter() - started) * 1000),
             "attempts": attempts,
             "usage": None,

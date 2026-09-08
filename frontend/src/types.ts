@@ -58,6 +58,7 @@ export type AnalysisItem = {
   answer?: string | null;
   content: {
     answer?: string;
+    analysis?: string;
     summary?: string;
     knowledgePoints?: string[];
     taxonomySuggestion?: {
@@ -65,12 +66,15 @@ export type AnalysisItem = {
       tagNames?: string[];
       confidence?: number | null;
     } | null;
+    taxonomySuggestionReason?: string | null;
     steps?: string[];
     optionAnalysis?: Record<string, string>;
     pitfalls?: string[];
     reviewAdvice?: string[];
   };
   createdAt: string;
+  sourceQuestionFingerprint?: string;
+  generatedAt?: string;
 };
 
 export type ChatMessage = {
@@ -81,6 +85,7 @@ export type ChatMessage = {
   attachmentJson?: string | null;
   createdAt: string;
   clientStatus?: 'pending' | 'failed';
+  idempotencyKey?: string;
 };
 
 export type BatchImportItemResult = {
@@ -111,7 +116,7 @@ export type CategoryTreeNode = {
 };
 export type NavItem = { key: string; label: string; icon: React.ReactNode; path?: string };
 export type PromptAction = { key: string; label: string; prompt: string; icon: React.ReactNode };
-export type AgentActionName = 'diagnose_mistake' | 'explain_alternative' | 'hint' | 'suggest_taxonomy';
+export type AgentActionName = 'diagnose_mistake' | 'explain_alternative' | 'hint' | 'suggest_taxonomy' | 'generate_similar_question' | 'grade_subjective_answer';
 export type AgentActionResponse = {
   traceId: string;
   questionId: number;
@@ -130,6 +135,22 @@ export type AgentActionResponse = {
     nextQuestion?: string;
     hintLevel?: number;
     revealsAnswer?: boolean;
+    proposalId?: string;
+    sourceQuestionId?: number;
+    sourceFingerprint?: string;
+    stem?: string;
+    questionType?: string;
+    options?: OptionItem[];
+    answer?: string;
+    analysis?: string;
+    variationStrategy?: string;
+    qualityStatus?: 'ok' | 'needs_review';
+    suggestedScore?: number;
+    maxScore?: number;
+    missingPoints?: string[];
+    feedback?: string;
+    uncertainties?: string[];
+    requiresHumanReview?: boolean;
   };
   warnings?: string[];
   error?: { code?: string; message?: string };
@@ -203,6 +224,16 @@ export type PracticeSessionResult = {
   scorePercent: number;
   createdAt: string;
   questions: PracticeSessionQResult[];
+};
+
+export type GradeSuggestion = {
+  proposalId: string;
+  suggestedScore: number;
+  maxScore: number;
+  feedback: string;
+  missingPoints: string[];
+  uncertainties: string[];
+  requiresHumanReview: boolean;
 };
 
 export type PracticeRecommendationGroup = {

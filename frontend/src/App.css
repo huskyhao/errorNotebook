@@ -3029,3 +3029,13 @@ button {
     grid-template-columns: 1fr;
   }
 }
+.grading-suggestion {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid rgba(122, 162, 247, 0.35);
+  border-radius: 8px;
+  background: rgba(122, 162, 247, 0.08);
+  color: var(--color-text-secondary);
+}

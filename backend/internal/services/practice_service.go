@@ -1,12 +1,15 @@
 package services
 
 import (
+	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
 	"time"
 
+	"erro-notebook/backend/internal/integrations/ai"
 	"erro-notebook/backend/internal/models"
 	"erro-notebook/backend/internal/repository"
 )
@@ -15,17 +18,31 @@ type PracticeService struct {
 	practiceRepo *repository.PracticeSessionRepository
 	questionRepo *repository.QuestionRepository
 	learningRepo *repository.LearningStateRepository
+	aiClient     *ai.Client
+	proposalRepo *repository.AIProposalRepository
 }
 
 func NewPracticeService(
 	practiceRepo *repository.PracticeSessionRepository,
 	questionRepo *repository.QuestionRepository,
 	learningRepo *repository.LearningStateRepository,
+	clients ...any,
 ) *PracticeService {
+	var aiClient *ai.Client
+	var proposalRepo *repository.AIProposalRepository
+	for _, item := range clients {
+		switch value := item.(type) {
+		case *ai.Client:
+			aiClient = value
+		case *repository.AIProposalRepository:
+			proposalRepo = value
+		}
+	}
 	return &PracticeService{
 		practiceRepo: practiceRepo,
 		questionRepo: questionRepo,
 		learningRepo: learningRepo,
+		aiClient:     aiClient, proposalRepo: proposalRepo,
 	}
 }
 
@@ -366,6 +383,132 @@ func (s *PracticeService) GetSessionResults(sessionID int64) (*PracticeSessionRe
 	}
 
 	return s.buildResult(session)
+}
+
+// GenerateGradeSuggestion asks Python for an advisory score tied to this
+// exact practice answer. It never mutates the session or learning state.
+func (s *PracticeService) GenerateGradeSuggestion(ctx context.Context, sessionID int64, orderIndex int, params map[string]any) (*ai.AgentActionResponse, error) {
+	if s.aiClient == nil {
+		return nil, fmt.Errorf("ai service unavailable")
+	}
+	session, err := s.practiceRepo.GetByID(sessionID)
+	if err != nil {
+		return nil, err
+	}
+	if session == nil {
+		return nil, fmt.Errorf("session not found")
+	}
+	item, err := s.practiceRepo.FindQuestion(sessionID, orderIndex)
+	if err != nil {
+		return nil, err
+	}
+	if item == nil {
+		return nil, fmt.Errorf("question not found in session")
+	}
+	if item.UserAnswer == nil || strings.TrimSpace(*item.UserAnswer) == "" {
+		return nil, fmt.Errorf("user answer is required")
+	}
+	var question *models.Question
+	if item.Question.ID == 0 {
+		question, err = s.questionRepo.GetByID(item.QuestionID)
+		if err != nil || question == nil {
+			return nil, fmt.Errorf("question not found")
+		}
+	} else {
+		question = &item.Question
+	}
+	if models.IsObjectiveQuestionType(normalizeQuestionType(question.QuestionType)) {
+		return nil, fmt.Errorf("objective questions do not use AI grading")
+	}
+	requestParams := map[string]any{}
+	for key, value := range params {
+		requestParams[key] = value
+	}
+	if _, ok := requestParams["maxScore"]; !ok {
+		requestParams["maxScore"] = 10
+	}
+	if _, ok := requestParams["standardAnswer"]; !ok && question.CorrectAnswer != nil {
+		requestParams["standardAnswer"] = *question.CorrectAnswer
+	}
+	fingerprint := practiceAnswerFingerprint(question, *item.UserAnswer)
+	resp, err := s.aiClient.AgentAction(ctx, ai.AgentActionRequest{TraceID: fmt.Sprintf("trace_grade_%d", time.Now().UnixNano()), QuestionID: question.ID, Action: "grade_subjective_answer", Context: ai.AgentContext{Question: toAIStructuredQuestion(question, parseWarnings(question.StructureWarnings)), Warnings: parseWarnings(question.StructureWarnings), ReferenceAnswer: derefString(question.CorrectAnswer), ReferenceAnswerSource: "question.correctAnswer", LatestAnswer: *item.UserAnswer, ContentFingerprint: fingerprint, Version: fingerprint}, Params: requestParams})
+	if err != nil {
+		return nil, err
+	}
+	if s.proposalRepo != nil && resp != nil && len(resp.Result) > 0 && (resp.Status == "completed" || resp.Status == "needs_review") {
+		var envelope struct {
+			ProposalID string `json:"proposalId"`
+		}
+		_ = json.Unmarshal(resp.Result, &envelope)
+		proposalID := envelope.ProposalID
+		if proposalID == "" {
+			proposalID = fmt.Sprintf("grade_%d_%d", sessionID, time.Now().UnixNano())
+		}
+		key := fmt.Sprintf("grade:%d:%d:%s", sessionID, orderIndex, fingerprint)
+		proposal, saveErr := s.proposalRepo.CreateOrGet(&models.AIProposal{ProposalID: proposalID, UserID: session.UserID, QuestionID: question.ID, Action: "grade_subjective_answer", Status: "pending", ContentJSON: string(resp.Result), SourceFingerprint: fingerprint, IdempotencyKey: key, ExpiresAt: time.Now().Add(24 * time.Hour)})
+		if saveErr != nil {
+			return nil, saveErr
+		}
+		if proposal != nil {
+			proposalID = proposal.ProposalID
+		}
+		var resultMap map[string]any
+		if json.Unmarshal(resp.Result, &resultMap) == nil {
+			resultMap["proposalId"] = proposalID
+			resp.Result, _ = json.Marshal(resultMap)
+		}
+	}
+	return resp, nil
+}
+
+func (s *PracticeService) ConfirmGradeSuggestion(ctx context.Context, sessionID int64, orderIndex int, proposalID string, score *float64, feedback *string) error {
+	if s.proposalRepo == nil {
+		return fmt.Errorf("proposal repository unavailable")
+	}
+	item, err := s.practiceRepo.FindQuestion(sessionID, orderIndex)
+	if err != nil {
+		return err
+	}
+	if item == nil {
+		return fmt.Errorf("question not found in session")
+	}
+	answer := derefString(item.UserAnswer)
+	question, err := s.questionRepo.GetByID(item.QuestionID)
+	if err != nil || question == nil {
+		return fmt.Errorf("question not found")
+	}
+	session, sessionErr := s.practiceRepo.GetByID(sessionID)
+	if sessionErr != nil || session == nil {
+		return fmt.Errorf("practice session not found")
+	}
+	return s.proposalRepo.ConfirmGrade(proposalID, sessionID, orderIndex, practiceAnswerFingerprint(question, answer), score, feedback, session.UserID)
+}
+
+func (s *PracticeService) GetGradeSuggestion(proposalID string, questionID int64) (*models.AIProposal, error) {
+	if s.proposalRepo == nil {
+		return nil, fmt.Errorf("proposal repository unavailable")
+	}
+	proposal, err := s.proposalRepo.Get(proposalID)
+	if err != nil {
+		return nil, err
+	}
+	if proposal == nil || proposal.QuestionID != questionID || proposal.Action != "grade_subjective_answer" {
+		return nil, fmt.Errorf("grading suggestion not found")
+	}
+	return proposal, nil
+}
+
+func (s *PracticeService) GetSessionQuestion(sessionID int64, orderIndex int) (*models.PracticeSessionQuestion, error) {
+	return s.practiceRepo.FindQuestion(sessionID, orderIndex)
+}
+
+func practiceAnswerFingerprint(question *models.Question, answer string) string {
+	data, _ := json.Marshal(struct {
+		QuestionID         int64
+		Stem, Type, Answer string
+	}{question.ID, question.Stem, question.QuestionType, answer})
+	digest := sha256.Sum256(data)
+	return fmt.Sprintf("sha256:%x", digest[:])
 }
 
 func (s *PracticeService) buildDetail(sessionID int64, includeAnswers bool) (*PracticeSessionDetail, error) {

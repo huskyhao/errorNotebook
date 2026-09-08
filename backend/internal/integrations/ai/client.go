@@ -74,14 +74,15 @@ type AnalyzeQuestionRequest struct {
 }
 
 type AnalysisPayload struct {
-	Answer             string              `json:"answer"`
-	Summary            string              `json:"summary"`
-	KnowledgePoints    []string            `json:"knowledgePoints"`
-	TaxonomySuggestion *TaxonomySuggestion `json:"taxonomySuggestion,omitempty"`
-	Steps              []string            `json:"steps"`
-	OptionAnalysis     map[string]string   `json:"optionAnalysis"`
-	Pitfalls           []string            `json:"pitfalls"`
-	ReviewAdvice       []string            `json:"reviewAdvice"`
+	Answer                   string              `json:"answer"`
+	Summary                  string              `json:"summary"`
+	KnowledgePoints          []string            `json:"knowledgePoints"`
+	TaxonomySuggestion       *TaxonomySuggestion `json:"taxonomySuggestion,omitempty"`
+	Steps                    []string            `json:"steps"`
+	OptionAnalysis           map[string]string   `json:"optionAnalysis"`
+	Pitfalls                 []string            `json:"pitfalls"`
+	ReviewAdvice             []string            `json:"reviewAdvice"`
+	TaxonomySuggestionReason string              `json:"taxonomySuggestionReason,omitempty"`
 }
 
 // TaxonomySuggestion is advisory only. The Go business layer stores it with
@@ -311,6 +312,12 @@ type ChatRequest struct {
 	Message    string             `json:"message"`
 }
 
+type ChatImage struct {
+	FileName    string
+	ContentType string
+	Bytes       []byte
+}
+
 type ChatResponse struct {
 	TraceID    string         `json:"traceId"`
 	QuestionID int64          `json:"questionId"`
@@ -344,6 +351,43 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, erro
 	return &result, nil
 }
 
+// ChatWithImages preserves the JSON contract in a multipart payload and sends
+// the actual server-read bytes as files. Paths and filenames are never used as
+// visual input.
+func (c *Client) ChatWithImages(ctx context.Context, req ChatRequest, images []ChatImage) (*ChatResponse, error) {
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	payload, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("marshal chat payload: %w", err)
+	}
+	if err := writer.WriteField("payload", string(payload)); err != nil {
+		return nil, err
+	}
+	for _, image := range images {
+		part, err := createFilePart(writer, "files", filepath.Base(image.FileName), image.ContentType)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := part.Write(image.Bytes); err != nil {
+			return nil, err
+		}
+	}
+	if err := writer.Close(); err != nil {
+		return nil, err
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/internal/v1/chat/question", &body)
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Content-Type", writer.FormDataContentType())
+	var result ChatResponse
+	if err := c.doJSON(httpReq, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
 func (c *Client) AgentAction(ctx context.Context, req AgentActionRequest) (*AgentActionResponse, error) {
 	body, err := json.Marshal(req)
 	if err != nil {
@@ -357,12 +401,6 @@ func (c *Client) AgentAction(ctx context.Context, req AgentActionRequest) (*Agen
 	var result AgentActionResponse
 	if err := c.doJSON(httpReq, &result); err != nil {
 		return nil, err
-	}
-	if result.Status == "failed" {
-		if result.Error != nil {
-			return nil, fmt.Errorf("agent action failed: %s: %s", result.Error.Code, result.Error.Message)
-		}
-		return nil, fmt.Errorf("agent action failed")
 	}
 	return &result, nil
 }

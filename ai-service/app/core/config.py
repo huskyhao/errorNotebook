@@ -66,6 +66,8 @@ class Settings:
     ai_action_timeout_seconds: int = _get_int("AI_ACTION_TIMEOUT_SECONDS", 45)
     ai_history_max_items: int = _get_int("AI_HISTORY_MAX_ITEMS", 12)
     ai_context_max_chars: int = _get_int("AI_CONTEXT_MAX_CHARS", 24000)
+    ai_max_image_bytes: int = _get_int("AI_MAX_IMAGE_BYTES", 8 * 1024 * 1024)
+    ai_max_image_count: int = _get_int("AI_MAX_IMAGE_COUNT", 4)
 
     vision_base_url: str = os.getenv("VISION_BASE_URL", "").rstrip("/")
     vision_api_key: str = os.getenv("VISION_API_KEY", "")

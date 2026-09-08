@@ -30,6 +30,7 @@ func AutoMigrate(db *gorm.DB) error {
 		&models.BatchImportItem{},
 		&models.PracticeSession{},
 		&models.PracticeSessionQuestion{},
+		&models.AIProposal{},
 	); err != nil {
 		return fmt.Errorf("auto migrate tables: %w", err)
 	}
@@ -41,6 +42,7 @@ func AutoMigrate(db *gorm.DB) error {
 		"analyses", "jobs", "chat_messages", "question_learning_states",
 		"batch_imports", "batch_import_items",
 		"practice_sessions", "practice_session_questions",
+		"ai_proposals",
 	}
 	for _, table := range tables {
 		sql := fmt.Sprintf("ALTER TABLE `%s` CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci", table)

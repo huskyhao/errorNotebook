@@ -11,7 +11,7 @@ from pydantic import ValidationError
 
 from app.core.config import settings
 from app.core.logging import format_log
-from app.schemas.analysis import AnalysisPayload, AnalysisRequest, AnalysisResponse
+from app.schemas.analysis import AnalysisPayload, AnalysisRequest, AnalysisResponse, TaxonomySuggestion
 from app.services.openai_client import OpenAICompatibleError, build_openai_client
 from app.services.vision_service import MultimodalClient, build_multimodal_client
 
@@ -28,6 +28,7 @@ _ANALYSIS_JSON_TEMPLATE = """\
     "tagNames": ["细粒度知识点1", "细粒度知识点2"],
     "confidence": 0.0
   },
+  "taxonomySuggestionReason": "没有匹配或候选不足时说明原因",
   "steps": ["步骤1：分析题干条件和约束", "步骤2：逐项比对选项"],
   "optionAnalysis": {
     "A": "选项A的分析（为什么对/错）",
@@ -174,9 +175,13 @@ class AnalysisService:
             if suggestion.categoryName and suggestion.categoryName.casefold() not in categories:
                 suggestion.categoryName = None
                 warnings.append("taxonomy_category_outside_candidates")
-            suggestion.tagNames = list(dict.fromkeys(tag for tag in suggestion.tagNames if tag.casefold() in tags))
+            suggestion.tagNames = list(dict.fromkeys(tag for tag in suggestion.tagNames if tag.casefold() in tags))[:8]
             if suggestion.confidence is not None:
                 suggestion.confidence = min(1, max(0, suggestion.confidence))
+            if not suggestion.categoryName and not suggestion.tagNames:
+                analysis.taxonomySuggestionReason = "没有候选 taxonomy 或题面信息不足，未生成可确认建议。"
+            elif suggestion.categoryName is None or len(suggestion.tagNames) < len(payload.context.get("tagCandidates", [])):
+                analysis.taxonomySuggestionReason = analysis.taxonomySuggestionReason or "仅保留命中现有候选的建议，仍需用户确认。"
         return analysis, list(dict.fromkeys(warnings))
 
     async def _analyze_with_openai(self, payload: AnalysisRequest) -> tuple[AnalysisPayload, int]:
@@ -191,6 +196,7 @@ class AnalysisService:
             "说明题面结构可能不完整；此时必须参考 question.rawText，不要只依据 options 数组判断题目。"
             "taxonomySuggestion 只能返回建议：categoryName 必须是稳定的高层学科分类，tagNames 只能是细粒度知识点；"
             "不要把 TCP、UDP 等知识点放进 categoryName，也不要声称建议已经生效。"
+            "候选分类和标签在 context.categoryCandidates/tagCandidates 中；只能从候选中选择。"
         )
         user_prompt = json.dumps(
             {
@@ -276,7 +282,6 @@ class AnalysisService:
                 question_id=payload.questionId,
                 backend=self.multimodal_backend_name,
                 content_len=len(content),
-                content=content,
             )
         )
 
@@ -290,8 +295,7 @@ class AnalysisService:
                     trace_id=payload.traceId,
                     question_id=payload.questionId,
                     backend=self.multimodal_backend_name,
-                    raw_content=content[:500],
-                    extracted=extracted[:500],
+                    content_len=len(content),
                 )
             )
             raise OpenAICompatibleError("multimodal llm response is not valid structured json") from exc
@@ -318,6 +322,12 @@ class AnalysisService:
                 "把互斥和同步混为同一概念。",
                 "忽略题干里的前提条件或适用范围。",
             ],
+            taxonomySuggestion=TaxonomySuggestion(
+                categoryName=(payload.context.get("categoryCandidates") or [None])[0],
+                tagNames=list(payload.context.get("tagCandidates") or [])[:2],
+                confidence=0.6 if payload.context.get("categoryCandidates") or payload.context.get("tagCandidates") else None,
+            ),
+            taxonomySuggestionReason=("mock 仅从 Go 提供的候选生成建议，仍需用户确认。" if payload.context.get("categoryCandidates") or payload.context.get("tagCandidates") else "没有可用的候选分类或标签。"),
             reviewAdvice=[
                 "优先整理同类题型的判断标准。",
                 "对 OCR 不清晰或带图题，先人工校准后再看解析。",

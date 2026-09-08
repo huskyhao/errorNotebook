@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"errors"
 	"fmt"
 
 	"erro-notebook/backend/internal/models"
@@ -28,4 +29,15 @@ func (r *ChatRepository) ListByQuestionID(questionID int64) ([]models.ChatMessag
 		return nil, fmt.Errorf("list chat messages: %w", err)
 	}
 	return messages, nil
+}
+
+func (r *ChatRepository) GetByIdempotencyKey(questionID int64, key string) (*models.ChatMessage, error) {
+	var message models.ChatMessage
+	if err := r.db.Where("question_id = ? AND idempotency_key = ?", questionID, key).First(&message).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("get chat message by idempotency key: %w", err)
+	}
+	return &message, nil
 }

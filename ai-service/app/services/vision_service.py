@@ -27,25 +27,31 @@ class MultimodalClient:
     async def create_structured_completion_with_image(
         self, *, image_bytes: bytes, media_type: str, system_prompt: str, user_prompt: str,
     ) -> tuple[str, int]:
-        return await asyncio.to_thread(
-            self._request, image_bytes=image_bytes, media_type=media_type,
-            system_prompt=system_prompt, user_prompt=user_prompt,
+        return await self.create_chat_completion_with_images(
+            images=[(image_bytes, media_type)], system_prompt=system_prompt, user_prompt=user_prompt
         )
 
-    def _request(self, *, image_bytes: bytes, media_type: str, system_prompt: str, user_prompt: str) -> tuple[str, int]:
-        image_b64 = base64.b64encode(image_bytes).decode("ascii")
+    async def create_chat_completion_with_images(
+        self, *, images: list[tuple[bytes, str]], system_prompt: str, user_prompt: str,
+    ) -> tuple[str, int]:
+        return await asyncio.to_thread(
+            self._request, images=images, system_prompt=system_prompt, user_prompt=user_prompt,
+        )
+
+    def _request(self, *, images: list[tuple[bytes, str]], system_prompt: str, user_prompt: str) -> tuple[str, int]:
+        image_parts = [
+            {"type": "image_url", "image_url": {"url": f"data:{media_type};base64,{base64.b64encode(image_bytes).decode('ascii')}"}}
+            for image_bytes, media_type in images
+        ]
         payload = {
             "model": self.model, "temperature": self.temperature, "max_tokens": self.max_tokens,
             "messages": [
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": [
-                    {"type": "image_url", "image_url": {"url": f"data:{media_type};base64,{image_b64}"}},
-                    {"type": "text", "text": user_prompt},
-                ]},
+                {"role": "user", "content": image_parts + [{"type": "text", "text": user_prompt}]},
             ],
         }
         url = f"{self.base_url}/chat/completions"
-        logger.info(format_log("multimodal.request", model=self.model, media_type=media_type, image_size_bytes=len(image_bytes)))
+        logger.info(format_log("multimodal.request", model=self.model, image_count=len(images), image_size_bytes=sum(len(item[0]) for item in images)))
         request = urllib.request.Request(
             url, data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
             headers={"Content-Type": "application/json", "Authorization": f"Bearer {self.api_key}"}, method="POST",

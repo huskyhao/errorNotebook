@@ -58,6 +58,7 @@ export default function QuestionWorkbenchPage() {
   const [draftOptions, setDraftOptions] = useState<OptionItem[]>([]);
   const [generatingLearning, setGeneratingLearning] = useState(false);
   const [agentActionPending, setAgentActionPending] = useState(false);
+  const [activeProposalId, setActiveProposalId] = useState<string | null>(null);
   const [error, setError] = useState('');
   const [deletingId, setDeletingId] = useState<number | null>(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState<number | null>(null);
@@ -306,13 +307,14 @@ export default function QuestionWorkbenchPage() {
     }
   }
 
-  async function handleSendMessage(messageOverride?: string, attachmentsOverride?: File[]) {
+  async function handleSendMessage(messageOverride?: string, attachmentsOverride?: File[], idempotencyKeyOverride?: string) {
     if (!selectedQuestion) return;
     const message = (messageOverride ?? reply).trim();
     const filesToSend = attachmentsOverride ?? chatAttachments;
     if (!message && filesToSend.length === 0) return;
     const questionId = selectedQuestion.id;
     const createdAt = new Date().toISOString();
+    const idempotencyKey = idempotencyKeyOverride ?? `chat-${questionId}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const attachmentNames = filesToSend.map((file) => file.name);
     const localUserMessage: ChatMessage = {
       id: -Date.now(),
@@ -321,6 +323,7 @@ export default function QuestionWorkbenchPage() {
       message: attachmentNames.length > 0 ? `${message || '追问附图'}\n[附图] ${attachmentNames.join('、')}` : message,
       createdAt,
       clientStatus: 'pending',
+      idempotencyKey,
     };
     const pendingAssistantMessage: ChatMessage = {
       id: localUserMessage.id - 1,
@@ -342,10 +345,11 @@ export default function QuestionWorkbenchPage() {
           ? (() => {
               const formData = new FormData();
               formData.append('message', message);
+              formData.append('idempotencyKey', idempotencyKey);
               filesToSend.forEach((file) => formData.append('attachments', file));
               return { method: 'POST', body: formData };
             })()
-          : { method: 'POST', body: JSON.stringify({ message }) };
+          : { method: 'POST', body: JSON.stringify({ message, idempotencyKey }) };
       const messages = await requestJson<ChatMessage[]>(`/questions/${questionId}/chat`, request);
       if (selectedQuestionIdRef.current === questionId) {
         setChatMessages(messages);
@@ -381,7 +385,7 @@ export default function QuestionWorkbenchPage() {
   function handleRetryMessage(message: ChatMessage) {
     const text = message.message.replace(/\n\[附图\].*$/s, '').trim();
     setError('');
-    void handleSendMessage(text, chatAttachments);
+    void handleSendMessage(text, [], message.idempotencyKey);
   }
 
   function handleRemoveChatAttachment(index: number) {
@@ -487,12 +491,17 @@ export default function QuestionWorkbenchPage() {
         method: 'POST',
         body: JSON.stringify({ action, params }),
       });
-      if (result.status !== 'completed' || !result.result) {
+      if (!['completed', 'needs_review'].includes(result.status) || !result.result) {
         setError(result.error?.message ?? '该动作需要补充信息或人工复核');
         return;
       }
       const data = result.result;
-      const content = data.explanation
+      if (data.proposalId) setActiveProposalId(data.proposalId);
+      const content = data.stem
+        ? `相似题候选（${data.qualityStatus === 'needs_review' ? '待复核' : '待确认'}）\n\n${data.stem}\n\n答案：${data.answer ?? '待复核'}\n解析：${data.analysis ?? ''}\n变化策略：${data.variationStrategy ?? ''}`
+        : data.suggestedScore !== undefined
+          ? `AI 建议分数：${data.suggestedScore}/${data.maxScore}\n\n${data.feedback ?? ''}\n缺失要点：${data.missingPoints?.join('；') ?? '—'}\n不确定项：${data.uncertainties?.join('；') ?? '—'}`
+          : data.explanation
         ? `${data.explanation}\n\n${data.focusPoints?.join('；') ?? ''}\n${data.checkQuestion ?? ''}`
         : data.hint
           ? `第 ${data.hintLevel ?? 1} 级提示：${data.hint}\n\n${data.nextQuestion ?? ''}`
@@ -503,6 +512,22 @@ export default function QuestionWorkbenchPage() {
     } finally {
       setAgentActionPending(false);
     }
+  }
+
+  async function handleConfirmProposal() {
+    if (!selectedQuestion || !activeProposalId) return;
+    try {
+      const created = await requestJson<QuestionItem>(`/questions/${selectedQuestion.id}/ai-proposals/${activeProposalId}/confirm`, { method: 'POST', body: JSON.stringify({}) });
+      setActiveProposalId(null);
+      setChatMessages((prev) => [...prev, { id: -Date.now(), questionId: selectedQuestion.id, role: 'assistant', message: `已确认创建相似题：题目 #${created.id}`, createdAt: new Date().toISOString() }]);
+      await loadQuestions();
+    } catch (err) { setError(err instanceof Error ? err.message : '确认候选失败'); }
+  }
+
+  async function handleRejectProposal() {
+    if (!selectedQuestion || !activeProposalId) return;
+    try { await requestJson(`/questions/${selectedQuestion.id}/ai-proposals/${activeProposalId}/reject`, { method: 'POST', body: JSON.stringify({}) }); setActiveProposalId(null); }
+    catch (err) { setError(err instanceof Error ? err.message : '放弃候选失败'); }
   }
 
   async function handleApplyTaxonomySuggestion() {
@@ -733,6 +758,9 @@ export default function QuestionWorkbenchPage() {
           onGenerateLearningState={handleGenerateLearningState}
           onAgentAction={handleAgentAction}
           onApplyTaxonomySuggestion={handleApplyTaxonomySuggestion}
+          onConfirmProposal={handleConfirmProposal}
+          onRejectProposal={handleRejectProposal}
+          activeProposalId={activeProposalId}
           attachments={chatAttachments}
           onAddAttachments={handleAddChatAttachments}
           onRemoveAttachment={handleRemoveChatAttachment}

@@ -54,6 +54,7 @@ func main() {
 	learningRepo := repository.NewLearningStateRepository(db)
 	categoryRepo := repository.NewCategoryRepository(db)
 	tagRepo := repository.NewTagRepository(db)
+	proposalRepo := repository.NewAIProposalRepository(db)
 
 	questionService := services.NewQuestionService(
 		questionRepo,
@@ -67,6 +68,7 @@ func main() {
 		aiClient,
 		aiClientAsync,
 		objectStorage,
+		proposalRepo,
 	)
 	jobService := services.NewJobService(jobRepo)
 	taxonomyService := services.NewTaxonomyService(categoryRepo, tagRepo)
@@ -75,7 +77,7 @@ func main() {
 	taxonomyHandler := handlers.NewTaxonomyHandler(taxonomyService, questionRepo)
 	questionAIHandler := handlers.NewQuestionAIHandler(questionAIService)
 	practiceRepo := repository.NewPracticeSessionRepository(db)
-	practiceService := services.NewPracticeService(practiceRepo, questionRepo, learningRepo)
+	practiceService := services.NewPracticeService(practiceRepo, questionRepo, learningRepo, aiClient, proposalRepo)
 	practiceHandler := handlers.NewPracticeHandler(practiceService)
 	router := handlers.NewRouter(questionHandler, taxonomyHandler, questionAIHandler, practiceHandler)
 	questionService.StartTaskWorkers(

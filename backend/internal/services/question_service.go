@@ -1,6 +1,7 @@
 package services
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -9,6 +10,7 @@ import (
 	"io"
 	"log"
 	"mime/multipart"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,6 +26,8 @@ var ErrQuestionNotFound = errors.New("question not found")
 var ErrInvalidCategory = errors.New("category must be an existing top-level subject category")
 var ErrAIUnavailable = errors.New("ai service unavailable")
 var ErrTaxonomySuggestionUnavailable = errors.New("taxonomy suggestion unavailable or has no applicable candidates")
+var ErrProposalNotFound = errors.New("ai proposal not found")
+var ErrProposalConflict = errors.New("ai proposal is not applicable")
 
 type QuestionService struct {
 	questionRepo  *repository.QuestionRepository
@@ -37,6 +41,7 @@ type QuestionService struct {
 	aiClient      *ai.Client
 	aiClientAsync *ai.Client
 	objectStorage storage.ObjectStorage
+	proposalRepo  *repository.AIProposalRepository
 }
 
 func NewQuestionService(
@@ -51,7 +56,12 @@ func NewQuestionService(
 	aiClient *ai.Client,
 	aiClientAsync *ai.Client,
 	objectStorage storage.ObjectStorage,
+	proposalRepos ...*repository.AIProposalRepository,
 ) *QuestionService {
+	var proposalRepo *repository.AIProposalRepository
+	if len(proposalRepos) > 0 {
+		proposalRepo = proposalRepos[0]
+	}
 	return &QuestionService{
 		questionRepo:  questionRepo,
 		jobRepo:       jobRepo,
@@ -64,6 +74,7 @@ func NewQuestionService(
 		aiClient:      aiClient,
 		aiClientAsync: aiClientAsync,
 		objectStorage: objectStorage,
+		proposalRepo:  proposalRepo,
 	}
 }
 
@@ -314,6 +325,7 @@ func (s *QuestionService) GetBatchImport(ctx context.Context, batchID int64) (*B
 
 type CreateChatMessageInput struct {
 	Message         string                  `json:"message"`
+	IdempotencyKey  string                  `json:"idempotencyKey"`
 	AttachmentFiles []*multipart.FileHeader `json:"-"`
 }
 
@@ -323,6 +335,9 @@ type ChatAttachment struct {
 	FilePath    string `json:"filePath"`
 	Size        int64  `json:"size"`
 }
+
+const maxChatAttachments = 4
+const maxImageBytes = 8 * 1024 * 1024
 
 func (s *QuestionService) ImportQuestion(ctx context.Context, input ImportQuestionInput) (*ImportQuestionResult, error) {
 	sourceType := strings.TrimSpace(input.SourceType)
@@ -408,7 +423,11 @@ func validateImageFile(fileHeader *multipart.FileHeader) error {
 		return fmt.Errorf("image file is required")
 	}
 	contentType := strings.ToLower(strings.TrimSpace(fileHeader.Header.Get("Content-Type")))
-	if strings.HasPrefix(contentType, "image/") {
+	if fileHeader.Size > maxImageBytes {
+		return fmt.Errorf("image must not exceed 8 MiB")
+	}
+	allowed := map[string]bool{"image/png": true, "image/jpeg": true, "image/gif": true, "image/webp": true, "image/bmp": true}
+	if allowed[contentType] {
 		return nil
 	}
 	switch strings.ToLower(filepath.Ext(fileHeader.Filename)) {
@@ -677,6 +696,10 @@ func (s *QuestionService) GetLatestAnalysis(ctx context.Context, questionID int6
 	if err := json.Unmarshal([]byte(analysis.ContentJSON), &content); err != nil {
 		return nil, fmt.Errorf("unmarshal analysis content: %w", err)
 	}
+	content["taxonomySuggestionMeta"] = map[string]any{
+		"source": analysis.Provider, "sourceQuestionFingerprint": analysis.SourceQuestionFingerprint,
+		"candidateSnapshot": analysis.TaxonomyCandidateSnapshotJSON, "generatedAt": analysis.GeneratedAt,
+	}
 
 	return &AnalysisDetail{
 		ID:         analysis.ID,
@@ -820,6 +843,15 @@ func (s *QuestionService) ApplyTaxonomySuggestion(ctx context.Context, questionI
 	if err != nil || analysis == nil {
 		return nil, ErrTaxonomySuggestionUnavailable
 	}
+	if analysis.SourceQuestionFingerprint != "" && analysis.SourceQuestionFingerprint != questionContentFingerprint(question) {
+		return nil, fmt.Errorf("%w: question changed since suggestion was generated", ErrProposalConflict)
+	}
+	// A manually selected taxonomy (and an already-applied suggestion) is the
+	// source of truth. Confirmation is intentionally idempotent and never
+	// overwrites an existing choice.
+	if question.CategoryID != nil || len(question.Tags) > 0 {
+		return s.GetQuestion(ctx, questionID)
+	}
 	var payload ai.AnalysisPayload
 	if err := json.Unmarshal([]byte(analysis.ContentJSON), &payload); err != nil || payload.TaxonomySuggestion == nil {
 		return nil, ErrTaxonomySuggestionUnavailable
@@ -828,6 +860,9 @@ func (s *QuestionService) ApplyTaxonomySuggestion(ctx context.Context, questionI
 	if suggestion == nil || suggestion.CategoryID == nil && len(suggestion.TagIDs) == 0 {
 		return nil, ErrTaxonomySuggestionUnavailable
 	}
+	if suggestion.UnresolvedCategory || len(suggestion.UnresolvedTagNames) > 0 {
+		return nil, fmt.Errorf("%w: one or more suggested taxonomy candidates no longer exist", ErrProposalConflict)
+	}
 	if err := s.questionRepo.ApplyTaxonomy(questionID, suggestion.CategoryID, suggestion.TagIDs); err != nil {
 		return nil, err
 	}
@@ -835,7 +870,7 @@ func (s *QuestionService) ApplyTaxonomySuggestion(ctx context.Context, questionI
 }
 
 func (s *QuestionService) RunAgentAction(ctx context.Context, questionID int64, action string, params map[string]any) (*ai.AgentActionResponse, error) {
-	if action != "diagnose_mistake" && action != "explain_alternative" && action != "hint" && action != "suggest_taxonomy" {
+	if action != "diagnose_mistake" && action != "explain_alternative" && action != "hint" && action != "suggest_taxonomy" && action != "generate_similar_question" && action != "grade_subjective_answer" {
 		return nil, fmt.Errorf("unsupported agent action: %s", action)
 	}
 	question, err := s.questionRepo.GetByID(questionID)
@@ -860,7 +895,7 @@ func (s *QuestionService) RunAgentAction(ctx context.Context, questionID int64, 
 	tags, _ := s.tagRepo.List()
 	messages, _ := s.chatRepo.ListByQuestionID(questionID)
 	fingerprint := questionContentFingerprint(question)
-	return s.aiClient.AgentAction(ctx, ai.AgentActionRequest{
+	resp, err := s.aiClient.AgentAction(ctx, ai.AgentActionRequest{
 		TraceID: fmt.Sprintf("trace_agent_%d", time.Now().UnixNano()), QuestionID: questionID, Action: action,
 		Context: ai.AgentContext{
 			Question: toAIStructuredQuestion(question, parseWarnings(question.StructureWarnings)),
@@ -870,6 +905,89 @@ func (s *QuestionService) RunAgentAction(ctx context.Context, questionID int64, 
 			TagCandidates: tagNames(tags), ContentFingerprint: fingerprint, Version: fingerprint,
 		}, Params: params,
 	})
+	if err != nil {
+		return nil, err
+	}
+	if s.proposalRepo != nil && (action == "generate_similar_question" || action == "grade_subjective_answer") && resp != nil && len(resp.Result) > 0 && (resp.Status == "completed" || resp.Status == "needs_review") {
+		var envelope struct {
+			ProposalID string `json:"proposalId"`
+		}
+		_ = json.Unmarshal(resp.Result, &envelope)
+		proposalID := envelope.ProposalID
+		if proposalID == "" {
+			proposalID = fmt.Sprintf("proposal_%d_%d", questionID, time.Now().UnixNano())
+		}
+		key := fmt.Sprintf("%d:%d:%s:%s", 1, questionID, action, fingerprint)
+		proposal, saveErr := s.proposalRepo.CreateOrGet(&models.AIProposal{ProposalID: proposalID, UserID: 1, QuestionID: questionID, Action: action, Status: "pending", ContentJSON: string(resp.Result), SourceFingerprint: fingerprint, IdempotencyKey: key, ExpiresAt: time.Now().Add(24 * time.Hour)})
+		if saveErr != nil {
+			return nil, saveErr
+		}
+		if proposal != nil {
+			proposalID = proposal.ProposalID
+		}
+		var resultMap map[string]any
+		if json.Unmarshal(resp.Result, &resultMap) == nil {
+			resultMap["proposalId"] = proposalID
+			resp.Result, _ = json.Marshal(resultMap)
+		}
+	}
+	return resp, nil
+}
+
+func (s *QuestionService) GetAIProposal(proposalID string) (*models.AIProposal, error) {
+	if s.proposalRepo == nil {
+		return nil, ErrProposalNotFound
+	}
+	return s.proposalRepo.Get(proposalID)
+}
+
+func (s *QuestionService) ConfirmSimilarQuestion(ctx context.Context, questionID int64, proposalID string) (*QuestionDetail, error) {
+	if s.proposalRepo == nil {
+		return nil, ErrProposalNotFound
+	}
+	proposal, err := s.proposalRepo.Get(proposalID)
+	if err != nil {
+		return nil, err
+	}
+	if proposal == nil || proposal.QuestionID != questionID || proposal.Action != "generate_similar_question" {
+		return nil, ErrProposalConflict
+	}
+	question, err := s.questionRepo.GetByID(questionID)
+	if err != nil {
+		return nil, err
+	}
+	if question == nil {
+		return nil, ErrQuestionNotFound
+	}
+	fingerprint := questionContentFingerprint(question)
+	createdID, err := s.proposalRepo.ConfirmSimilar(proposalID, 1, fingerprint)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrProposalConflict, err)
+	}
+	created, err := s.questionRepo.GetByID(createdID)
+	if err != nil {
+		return nil, err
+	}
+	if created == nil {
+		return nil, ErrProposalConflict
+	}
+	return s.GetQuestion(ctx, createdID)
+}
+
+func (s *QuestionService) RejectAIProposal(proposalID string, questionIDs ...int64) error {
+	if s.proposalRepo == nil {
+		return ErrProposalNotFound
+	}
+	if len(questionIDs) > 0 {
+		proposal, err := s.proposalRepo.Get(proposalID)
+		if err != nil {
+			return err
+		}
+		if proposal == nil || proposal.QuestionID != questionIDs[0] {
+			return ErrProposalConflict
+		}
+	}
+	return s.proposalRepo.Reject(proposalID, 1)
 }
 
 func (s *QuestionService) CreateChatMessage(ctx context.Context, questionID int64, input CreateChatMessageInput) ([]models.ChatMessage, error) {
@@ -880,10 +998,31 @@ func (s *QuestionService) CreateChatMessage(ctx context.Context, questionID int6
 	if question == nil {
 		return nil, ErrQuestionNotFound
 	}
+	var existing *models.ChatMessage
+	if strings.TrimSpace(input.IdempotencyKey) != "" && s.chatRepo != nil {
+		existing, err = s.chatRepo.GetByIdempotencyKey(questionID, strings.TrimSpace(input.IdempotencyKey))
+		if err != nil {
+			return nil, err
+		}
+		if existing != nil {
+			messages, listErr := s.chatRepo.ListByQuestionID(questionID)
+			if listErr != nil {
+				return nil, listErr
+			}
+			for _, message := range messages {
+				if message.ID > existing.ID && message.Role == "assistant" {
+					return messages, nil
+				}
+			}
+		}
+	}
 
 	attachments, err := s.saveChatAttachments(ctx, questionID, input.AttachmentFiles)
 	if err != nil {
 		return nil, err
+	}
+	if existing != nil && len(attachments) == 0 && existing.AttachmentJSON != nil {
+		_ = json.Unmarshal([]byte(*existing.AttachmentJSON), &attachments)
 	}
 	var attachmentJSON *string
 	if len(attachments) > 0 {
@@ -899,14 +1038,18 @@ func (s *QuestionService) CreateChatMessage(ctx context.Context, questionID int6
 		messageText = "请结合我补充的图片继续讲解。"
 	}
 
-	userMessage := &models.ChatMessage{
-		QuestionID:     questionID,
-		Role:           "user",
-		Message:        messageText,
-		AttachmentJSON: attachmentJSON,
-	}
-	if err := s.chatRepo.Create(userMessage); err != nil {
-		return nil, err
+	userMessage := existing
+	if userMessage == nil {
+		userMessage = &models.ChatMessage{QuestionID: questionID, Role: "user", Message: messageText, AttachmentJSON: attachmentJSON}
+		if strings.TrimSpace(input.IdempotencyKey) != "" {
+			key := strings.TrimSpace(input.IdempotencyKey)
+			userMessage.IdempotencyKey = &key
+		}
+		if err := s.chatRepo.Create(userMessage); err != nil {
+			return nil, err
+		}
+	} else {
+		messageText = userMessage.Message
 	}
 
 	// Build AI chat request context
@@ -934,7 +1077,28 @@ func (s *QuestionService) CreateChatMessage(ctx context.Context, questionID int6
 		Message:    buildChatPromptWithAttachments(messageText, attachments),
 	}
 
-	resp, err := s.aiClient.Chat(ctx, aiReq)
+	if s.aiClient == nil {
+		return nil, ErrAIUnavailable
+	}
+	var resp *ai.ChatResponse
+	if len(attachments) > 0 {
+		images := make([]ai.ChatImage, 0, len(attachments))
+		for _, attachment := range attachments {
+			reader, openErr := s.openQuestionImage(ctx, attachment.FilePath)
+			if openErr != nil {
+				return nil, fmt.Errorf("%w: attachment object unavailable", ErrAIUnavailable)
+			}
+			data, readErr := io.ReadAll(io.LimitReader(reader, maxImageBytes+1))
+			reader.Close()
+			if readErr != nil || len(data) == 0 || len(data) > maxImageBytes {
+				return nil, fmt.Errorf("%w: invalid attachment bytes", ErrAIUnavailable)
+			}
+			images = append(images, ai.ChatImage{FileName: attachment.FileName, ContentType: attachment.ContentType, Bytes: data})
+		}
+		resp, err = s.aiClient.ChatWithImages(ctx, aiReq, images)
+	} else {
+		resp, err = s.aiClient.Chat(ctx, aiReq)
+	}
 	var replyText string
 	if err != nil {
 		log.Printf("[chat] ai-service FAILED question=%d: %v", questionID, err)
@@ -958,6 +1122,9 @@ func (s *QuestionService) saveChatAttachments(ctx context.Context, questionID in
 	if len(files) == 0 {
 		return nil, nil
 	}
+	if len(files) > maxChatAttachments {
+		return nil, fmt.Errorf("at most %d chat images are allowed", maxChatAttachments)
+	}
 	if s.objectStorage == nil {
 		return nil, fmt.Errorf("object storage is not configured")
 	}
@@ -971,17 +1138,21 @@ func (s *QuestionService) saveChatAttachments(ctx context.Context, questionID in
 		if err != nil {
 			return nil, fmt.Errorf("open chat attachment: %w", err)
 		}
-		defer src.Close()
+		data, contentType, readErr := readValidatedImage(src, fh.Header.Get("Content-Type"))
+		src.Close()
+		if readErr != nil {
+			return nil, readErr
+		}
 
 		filename := fmt.Sprintf("%d_%d%s", time.Now().UnixNano(), idx, strings.ToLower(filepath.Ext(fh.Filename)))
 		objectKey := filepath.ToSlash(filepath.Join("questions", fmt.Sprintf("%d", questionID), "chat", filename))
-		if err := s.objectStorage.Put(ctx, objectKey, src); err != nil {
+		if err := s.objectStorage.Put(ctx, objectKey, bytes.NewReader(data)); err != nil {
 			return nil, fmt.Errorf("save chat attachment: %w", err)
 		}
 
 		attachments = append(attachments, ChatAttachment{
 			FileName:    fh.Filename,
-			ContentType: fh.Header.Get("Content-Type"),
+			ContentType: contentType,
 			FilePath:    objectKey,
 			Size:        fh.Size,
 		})
@@ -989,13 +1160,36 @@ func (s *QuestionService) saveChatAttachments(ctx context.Context, questionID in
 	return attachments, nil
 }
 
+func readValidatedImage(reader io.Reader, declared string) ([]byte, string, error) {
+	data, err := io.ReadAll(io.LimitReader(reader, maxImageBytes+1))
+	if err != nil {
+		return nil, "", fmt.Errorf("read image: %w", err)
+	}
+	if len(data) == 0 {
+		return nil, "", fmt.Errorf("image is empty")
+	}
+	if len(data) > maxImageBytes {
+		return nil, "", fmt.Errorf("image exceeds 8 MiB")
+	}
+	detected := http.DetectContentType(data)
+	allowed := map[string]bool{"image/png": true, "image/jpeg": true, "image/gif": true, "image/webp": true, "image/bmp": true}
+	if !allowed[detected] {
+		return nil, "", fmt.Errorf("image bytes are not a supported image")
+	}
+	declared = strings.ToLower(strings.TrimSpace(declared))
+	if declared != "" && declared != "application/octet-stream" && declared != detected {
+		return nil, "", fmt.Errorf("declared MIME does not match image bytes")
+	}
+	return data, detected, nil
+}
+
 func buildChatPromptWithAttachments(message string, attachments []ChatAttachment) string {
 	if len(attachments) == 0 {
 		return message
 	}
-	lines := []string{message, "", "用户本次追问附加了图片，当前后端已保存附件，后续可交给多模态 agent 处理。附件列表："}
+	lines := []string{message, "", "用户本次追问附加了图片；图片内容将作为实际视觉输入，以下仅为不可信文件元数据："}
 	for _, attachment := range attachments {
-		lines = append(lines, fmt.Sprintf("- %s (%s)", attachment.FileName, attachment.FilePath))
+		lines = append(lines, fmt.Sprintf("- %s (%s, %d bytes)", attachment.FileName, attachment.ContentType, attachment.Size))
 	}
 	return strings.TrimSpace(strings.Join(lines, "\n"))
 }

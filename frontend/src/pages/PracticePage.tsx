@@ -5,6 +5,7 @@ import type {
   QuestionItem, CategoryTreeNode, BatchImportResult, BatchProgress,
   PracticeSessionDetail, PracticeSessionResult,
   PracticeRecommendationGroup,
+  GradeSuggestion,
 } from '../types';
 import TopBar from '../components/TopBar';
 import SideNavigation from '../components/SideNavigation';
@@ -66,6 +67,8 @@ export default function PracticePage() {
 
   // ---- Results state ----
   const [results, setResults] = useState<PracticeSessionResult | null>(null);
+  const [gradeSuggestions, setGradeSuggestions] = useState<Record<number, GradeSuggestion>>({});
+  const [gradingOrder, setGradingOrder] = useState<number | null>(null);
 
   async function loadQuestions(categoryId: number | null = activeCategoryId) {
     setLoading(true);
@@ -386,6 +389,26 @@ export default function PracticePage() {
     setCurrentIndex(0);
     setSelectedIds(new Set());
     navigate('/practice', { replace: true });
+  }
+
+  async function requestGradeSuggestion(orderIndex: number) {
+    if (!session || !results) return;
+    setGradingOrder(orderIndex); setError('');
+    try {
+      const response = await requestJson<{ result?: GradeSuggestion; status: string }>(`/practice-sessions/${session.id}/questions/${orderIndex}/grade-suggestion`, { method: 'POST', body: JSON.stringify({ params: { maxScore: 10 } }) });
+      if (!response.result) throw new Error('评分建议缺少结构化结果');
+      setGradeSuggestions((prev) => ({ ...prev, [orderIndex]: response.result! }));
+    } catch (err) { setError(err instanceof Error ? err.message : '生成评分建议失败'); }
+    finally { setGradingOrder(null); }
+  }
+
+  async function confirmGradeSuggestion(orderIndex: number) {
+    if (!session) return;
+    const suggestion = gradeSuggestions[orderIndex]; if (!suggestion) return;
+    try {
+      await requestJson(`/practice-sessions/${session.id}/questions/${orderIndex}/grade-suggestion/confirm`, { method: 'POST', body: JSON.stringify({ proposalId: suggestion.proposalId }) });
+      setError('评分建议已由 Go 保存，仍请以人工确认结果为准。');
+    } catch (err) { setError(err instanceof Error ? err.message : '确认评分建议失败'); }
   }
 
   function renderAnswerInput(currentQ: PracticeSessionDetail['questions'][number]) {
@@ -805,6 +828,20 @@ export default function PracticePage() {
                   </div>
                   <div className="result-question-actions">
                     <Link className="text-button" to={`/?questionId=${q.question.id}`}>查看 AI 解析与追问</Link>
+                    {['subjective', 'short_answer', 'essay', 'calculation'].includes(q.question.questionType) && q.userAnswer ? (
+                      <>
+                        <button className="text-button" type="button" onClick={() => requestGradeSuggestion(q.orderIndex)} disabled={gradingOrder === q.orderIndex}>{gradingOrder === q.orderIndex ? '评分中...' : '生成 AI 建议分数'}</button>
+                        {gradeSuggestions[q.orderIndex] ? (
+                          <div className="grading-suggestion" aria-label="AI 建议分数">
+                            <strong>AI 建议：{gradeSuggestions[q.orderIndex].suggestedScore}/{gradeSuggestions[q.orderIndex].maxScore}</strong>
+                            <span>{gradeSuggestions[q.orderIndex].feedback}</span>
+                            <span>缺失要点：{gradeSuggestions[q.orderIndex].missingPoints.join('；') || '—'}</span>
+                            <span>不确定项：{gradeSuggestions[q.orderIndex].uncertainties.join('；') || '—'}</span>
+                            <button className="text-button is-highlight" type="button" onClick={() => confirmGradeSuggestion(q.orderIndex)}>人工确认采用</button>
+                          </div>
+                        ) : null}
+                      </>
+                    ) : null}
                   </div>
                 </div>
               ))}

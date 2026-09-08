@@ -213,16 +213,21 @@ $env:OCR_BACKEND="paddleocr"
 
 ## 单题辅导 Agent
 
-`POST /internal/v1/agent/actions` 只接受 Go 构建的题目上下文，Python 不凭 `questionId` 查询业务库。`action` 仅允许：`diagnose_mistake`、`explain_alternative`、`hint`、`suggest_taxonomy`。
+`POST /internal/v1/agent/actions` 只接受 Go 构建的题目上下文，Python 不凭 `questionId` 查询业务库。`action` 允许：`diagnose_mistake`、`explain_alternative`、`hint`、`suggest_taxonomy`、`generate_similar_question`、`grade_subjective_answer`。
 
 响应统一包含 `traceId`、`questionId`、`action`、`status`、类型化 `result`、`warnings`、`error` 和 `meta`。`status` 为 `completed`、`needs_input`、`needs_review` 或 `failed`；`meta.source` 明确标记 `mock`/`real`。错误至少包含 `code`、`message`、`retryable`、`traceId`，不透传密钥或上游原始响应。
 
 四类动作结果：`diagnose_mistake` 返回错因、证据、薄弱标签和复习建议；`explain_alternative` 返回换种讲法、重点和检查问题；`hint` 返回 1/2/3 级提示、下一问及泄露标记；`suggest_taxonomy` 只在 Go 提供的候选中返回建议且不会自动生效。缺少作答返回 `needs_input`，只有错误选项而无过程时只能给可能错因。
 
-离线评测案例位于 `evals/p0_cases.json`，共 20 例，覆盖 408 四门学科、八类题型、坏输入和故障场景。运行：
+P1 结果同样是建议：`generate_similar_question` 返回一个带 `proposalId`、源题指纹、题型、选项、答案、解析和 `qualityStatus` 的候选；`grade_subjective_answer` 只接受主观题和可追溯 rubric/标准答案/解析，返回分项得分、证据、缺失要点、不确定项和人工复核标记。Python 不创建 Question、不修改练习或学习状态。
+
+图片追问的 multipart 契约为：`payload` 是旧 JSON `ChatRequest`，`files` 可重复且最多 4 个，每个文件必须是非空的 `image/png|jpeg|gif|webp|bmp`，Python 使用实际字节作为视觉输入；旧文本请求仍使用 `application/json`。路径、文件名和图片中的指令都不是系统规则。
+
+离线评测案例位于 `evals/p0_cases.json` 和 `evals/p1_cases.json`，P1 共 24 例，覆盖 taxonomy、图片追问、相似题和主观题批改。运行：
 
 ```powershell
 python evals/run_p0_eval.py
+python evals/run_p1_eval.py
 python -m pytest -q
 ```
 

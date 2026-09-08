@@ -18,6 +18,7 @@ const promptActions: PromptAction[] = [
   { key: 'summarize_mistake', label: '归纳错因', prompt: '请帮我归纳这道题的错因，并给出下次避免的方法。', icon: <CompassIcon /> },
   { key: 'explain_differently', label: '换种讲法', prompt: '请换一种更直观的方式讲解这道题。', icon: <SparkleIcon /> },
   { key: 'hint', label: '分级提示', prompt: '', icon: <NotebookIcon /> },
+  { key: 'similar', label: '生成相似题', prompt: '', icon: <SparkleIcon /> },
 ];
 
 interface ReasoningCenterProps {
@@ -32,6 +33,9 @@ interface ReasoningCenterProps {
   onGenerateLearningState: () => void;
   onAgentAction: (action: AgentActionName, params?: Record<string, unknown>) => void;
   onApplyTaxonomySuggestion: () => void;
+  onConfirmProposal: () => void;
+  onRejectProposal: () => void;
+  activeProposalId: string | null;
   attachments: File[];
   onAddAttachments: (files: File[]) => void;
   onRemoveAttachment: (index: number) => void;
@@ -53,6 +57,9 @@ export default function ReasoningCenter({
   onGenerateLearningState,
   onAgentAction,
   onApplyTaxonomySuggestion,
+  onConfirmProposal,
+  onRejectProposal,
+  activeProposalId,
   attachments,
   onAddAttachments,
   onRemoveAttachment,
@@ -81,6 +88,10 @@ export default function ReasoningCenter({
     }
     if (action.key === 'hint') {
       onAgentAction('hint', { hintLevel: 1 });
+      return;
+    }
+    if (action.key === 'similar') {
+      onAgentAction('generate_similar_question', {});
       return;
     }
     setReply(action.prompt);
@@ -115,12 +126,13 @@ export default function ReasoningCenter({
                     {analysis.content.answer || analysis.answer || '暂无'}
                   </p>
                   <p>{analysis.content.summary || '暂无解析摘要'}</p>
-                  {analysis.content.taxonomySuggestion && (analysis.content.taxonomySuggestion.categoryName || analysis.content.taxonomySuggestion.tagNames?.length) ? (
+                  {analysis.content.taxonomySuggestion ? (
                     <div className="taxonomy-suggestion" aria-label="AI 分类标签建议">
-                      <span>AI 分类建议（待确认）</span>
+                      <span>AI 分类建议（待确认，来源：{analysis.provider || 'AI service'}）</span>
                       {analysis.content.taxonomySuggestion.categoryName ? <strong>{analysis.content.taxonomySuggestion.categoryName}</strong> : null}
                       {analysis.content.taxonomySuggestion.tagNames?.map((tag) => <em key={tag}>{tag}</em>)}
-                      <button className="text-button" type="button" onClick={onApplyTaxonomySuggestion}>确认应用</button>
+                      {analysis.content.taxonomySuggestion.categoryName || analysis.content.taxonomySuggestion.tagNames?.length ? <button className="text-button" type="button" onClick={onApplyTaxonomySuggestion}>确认应用</button> : <small>{analysis.content.taxonomySuggestionReason ?? '暂无可确认匹配'}</small>}
+                      <button className="text-button" type="button" onClick={() => onAgentAction('suggest_taxonomy')} disabled={agentActionPending}>重新生成建议</button>
                     </div>
                   ) : null}
                 </div>
@@ -187,6 +199,13 @@ export default function ReasoningCenter({
                 </div>
               ),
             )}
+            {activeProposalId ? (
+              <div className="taxonomy-suggestion" aria-label="AI 候选确认">
+                <span>候选已保存，确认后才会进入题库</span>
+                <button className="text-button is-highlight" type="button" onClick={onConfirmProposal}>确认保存</button>
+                <button className="text-button" type="button" onClick={onRejectProposal}>放弃</button>
+              </div>
+            ) : null}
           </div>
         </div>
 

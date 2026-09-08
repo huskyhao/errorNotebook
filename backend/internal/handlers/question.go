@@ -348,6 +348,10 @@ func (h *QuestionHandler) ApplyTaxonomySuggestion(c *gin.Context) {
 			response.Error(c, http.StatusConflict, "TAXONOMY_SUGGESTION_UNAVAILABLE", err.Error())
 			return
 		}
+		if errors.Is(err, services.ErrProposalConflict) {
+			response.Error(c, http.StatusConflict, "TAXONOMY_SUGGESTION_EXPIRED", err.Error())
+			return
+		}
 		response.Error(c, http.StatusBadRequest, "TAXONOMY_SUGGESTION_APPLY_FAILED", err.Error())
 		return
 	}
@@ -385,8 +389,67 @@ func (h *QuestionHandler) RunAgentAction(c *gin.Context) {
 	response.OK(c, result)
 }
 
+func (h *QuestionHandler) GetAIProposal(c *gin.Context) {
+	questionID, ok := parseIDParam(c)
+	if !ok {
+		return
+	}
+	proposal, err := h.questionService.GetAIProposal(c.Param("proposalId"))
+	if err != nil {
+		response.Error(c, http.StatusInternalServerError, "PROPOSAL_FETCH_FAILED", err.Error())
+		return
+	}
+	if proposal == nil {
+		response.Error(c, http.StatusNotFound, "PROPOSAL_NOT_FOUND", "proposal not found")
+		return
+	}
+	if proposal.QuestionID != questionID {
+		response.Error(c, http.StatusNotFound, "PROPOSAL_NOT_FOUND", "proposal not found")
+		return
+	}
+	var content any
+	if json.Unmarshal([]byte(proposal.ContentJSON), &content) != nil {
+		content = map[string]any{}
+	}
+	response.OK(c, gin.H{"proposalId": proposal.ProposalID, "questionId": proposal.QuestionID, "action": proposal.Action, "status": proposal.Status, "content": content, "sourceFingerprint": proposal.SourceFingerprint, "expiresAt": proposal.ExpiresAt, "createdQuestionId": proposal.CreatedQuestionID})
+}
+
+func (h *QuestionHandler) ConfirmSimilarProposal(c *gin.Context) {
+	id, ok := parseIDParam(c)
+	if !ok {
+		return
+	}
+	result, err := h.questionService.ConfirmSimilarQuestion(c.Request.Context(), id, c.Param("proposalId"))
+	if err != nil {
+		if errors.Is(err, services.ErrQuestionNotFound) {
+			response.Error(c, http.StatusNotFound, "QUESTION_NOT_FOUND", err.Error())
+			return
+		}
+		response.Error(c, http.StatusConflict, "PROPOSAL_NOT_APPLICABLE", err.Error())
+		return
+	}
+	response.OK(c, result)
+}
+
+func (h *QuestionHandler) RejectAIProposal(c *gin.Context) {
+	questionID, ok := parseIDParam(c)
+	if !ok {
+		return
+	}
+	if err := h.questionService.RejectAIProposal(c.Param("proposalId"), questionID); err != nil {
+		if errors.Is(err, services.ErrProposalConflict) {
+			response.Error(c, http.StatusNotFound, "PROPOSAL_NOT_FOUND", "proposal not found")
+			return
+		}
+		response.Error(c, http.StatusConflict, "PROPOSAL_REJECT_FAILED", err.Error())
+		return
+	}
+	response.OK(c, gin.H{"status": "rejected"})
+}
+
 type createChatMessageRequest struct {
-	Message string `json:"message" binding:"required"`
+	Message        string `json:"message" binding:"required"`
+	IdempotencyKey string `json:"idempotencyKey"`
 }
 
 func (h *QuestionHandler) CreateChatMessage(c *gin.Context) {
@@ -399,6 +462,7 @@ func (h *QuestionHandler) CreateChatMessage(c *gin.Context) {
 	var files []*multipart.FileHeader
 	if strings.HasPrefix(c.GetHeader("Content-Type"), "multipart/form-data") {
 		req.Message = c.PostForm("message")
+		req.IdempotencyKey = c.PostForm("idempotencyKey")
 		form, err := c.MultipartForm()
 		if err != nil {
 			response.Error(c, http.StatusBadRequest, "INVALID_MULTIPART", err.Error())
@@ -414,6 +478,7 @@ func (h *QuestionHandler) CreateChatMessage(c *gin.Context) {
 
 	messages, err := h.questionService.CreateChatMessage(c.Request.Context(), id, services.CreateChatMessageInput{
 		Message:         req.Message,
+		IdempotencyKey:  req.IdempotencyKey,
 		AttachmentFiles: files,
 	})
 	if err != nil {

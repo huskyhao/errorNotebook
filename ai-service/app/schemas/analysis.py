@@ -23,11 +23,16 @@ class TaxonomySuggestion(BaseModel):
     confidence: float | None = None
 
 
+class TaxonomySuggestionReason(BaseModel):
+    reason: str = ""
+
+
 class AnalysisPayload(BaseModel):
     answer: str
     summary: str
     knowledgePoints: list[str] = Field(default_factory=list)
     taxonomySuggestion: TaxonomySuggestion | None = None
+    taxonomySuggestionReason: str | None = None
     steps: list[str] = Field(default_factory=list)
     optionAnalysis: dict[str, str] = Field(default_factory=dict)
     pitfalls: list[str] = Field(default_factory=list)

@@ -21,6 +21,15 @@ class ChatRequest(BaseModel):
     analysis: AnalysisPayload | None = None
     history: list[ChatMessageItem] = Field(default_factory=list, max_length=20)
     message: str = Field(min_length=1, max_length=4000)
+    # Populated only by the multipart adapter; never accepted as a client
+    # JSON field. Actual bytes are required for visual follow-up.
+    imageAttachments: list["ChatImage"] = Field(default_factory=list, exclude=True, max_length=4)
+
+
+class ChatImage(BaseModel):
+    fileName: str = Field(min_length=1, max_length=255)
+    contentType: Literal["image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp"]
+    content: bytes = Field(min_length=1, max_length=8 * 1024 * 1024)
 
 
 class ChatResponse(BaseModel):

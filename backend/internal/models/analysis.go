@@ -3,13 +3,16 @@ package models
 import "time"
 
 type Analysis struct {
-	ID          int64     `gorm:"primaryKey" json:"id"`
-	QuestionID  int64     `gorm:"not null;index" json:"questionId"`
-	JobID       *string   `gorm:"column:job_id;type:varchar(64);uniqueIndex" json:"-"`
-	Provider    string    `gorm:"type:varchar(128);not null" json:"provider"`
-	Answer      *string   `gorm:"type:varchar(255)" json:"answer,omitempty"`
-	ContentJSON string    `gorm:"column:content_json;type:json;not null" json:"contentJson"`
-	CreatedAt   time.Time `json:"createdAt"`
+	ID                            int64     `gorm:"primaryKey" json:"id"`
+	QuestionID                    int64     `gorm:"not null;index" json:"questionId"`
+	JobID                         *string   `gorm:"column:job_id;type:varchar(64);uniqueIndex" json:"-"`
+	Provider                      string    `gorm:"type:varchar(128);not null" json:"provider"`
+	Answer                        *string   `gorm:"type:varchar(255)" json:"answer,omitempty"`
+	ContentJSON                   string    `gorm:"column:content_json;type:json;not null" json:"contentJson"`
+	SourceQuestionFingerprint     string    `gorm:"column:source_question_fingerprint;type:varchar(128)" json:"sourceQuestionFingerprint,omitempty"`
+	TaxonomyCandidateSnapshotJSON string    `gorm:"column:taxonomy_candidate_snapshot_json;type:json" json:"-"`
+	GeneratedAt                   time.Time `gorm:"column:generated_at" json:"generatedAt"`
+	CreatedAt                     time.Time `json:"createdAt"`
 }
 
 func (Analysis) TableName() string {
@@ -42,6 +45,7 @@ func (Job) TableName() string {
 type ChatMessage struct {
 	ID             int64     `gorm:"primaryKey" json:"id"`
 	QuestionID     int64     `gorm:"not null;index" json:"questionId"`
+	IdempotencyKey *string   `gorm:"column:idempotency_key;type:varchar(128);uniqueIndex" json:"-"`
 	Role           string    `gorm:"type:varchar(32);not null" json:"role"`
 	Message        string    `gorm:"type:mediumtext;not null" json:"message"`
 	AttachmentJSON *string   `gorm:"column:attachment_json;type:json" json:"attachmentJson,omitempty"`

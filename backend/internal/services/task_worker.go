@@ -115,7 +115,15 @@ func (s *QuestionService) processAnalysisJob(ctx context.Context, job *models.Jo
 	}
 	job.ProcessingStage = "analysis"
 	warnings := parseWarnings(question.StructureWarnings)
-	req := aiAnalyzeRequest(question, warnings)
+	var categories []models.Category
+	var tags []models.Tag
+	if s.categoryRepo != nil {
+		categories, _ = s.categoryRepo.List()
+	}
+	if s.tagRepo != nil {
+		tags, _ = s.tagRepo.List()
+	}
+	req := aiAnalyzeRequest(question, warnings, categoryNames(categories), tagNames(tags))
 	imagePath, cleanup, err := s.materializeQuestionImage(ctx, question)
 	if err != nil {
 		return err
@@ -132,8 +140,10 @@ func (s *QuestionService) processAnalysisJob(ctx context.Context, job *models.Jo
 	}
 	answer := resp.Analysis.Answer
 	jobID := job.JobID
+	snapshot, _ := json.Marshal(map[string]any{"categoryCandidates": categoryNames(categories), "tagCandidates": tagNames(tags)})
 	if err := s.analysisRepo.Create(&models.Analysis{
 		QuestionID: question.ID, JobID: &jobID, Provider: "ai-service", Answer: &answer, ContentJSON: string(contentJSON),
+		SourceQuestionFingerprint: questionContentFingerprint(question), TaxonomyCandidateSnapshotJSON: string(snapshot), GeneratedAt: time.Now(),
 	}); err != nil {
 		return fmt.Errorf("save analysis: %w", err)
 	}
@@ -157,7 +167,7 @@ func (s *QuestionService) processAnalysisJob(ctx context.Context, job *models.Jo
 	return nil
 }
 
-func aiAnalyzeRequest(question *models.Question, warnings []string) ai.AnalyzeQuestionRequest {
+func aiAnalyzeRequest(question *models.Question, warnings []string, categoryCandidates []string, tagCandidates []string) ai.AnalyzeQuestionRequest {
 	return ai.AnalyzeQuestionRequest{
 		QuestionID: question.ID,
 		TraceID:    fmt.Sprintf("trace_analyze_%d", time.Now().UnixNano()),
@@ -167,6 +177,7 @@ func aiAnalyzeRequest(question *models.Question, warnings []string) ai.AnalyzeQu
 			"sourceType": question.SourceType, "structureWarnings": warnings,
 			"structureConfidence": question.StructureConfidence, "parseSource": question.ParseSource,
 			"structureMayBePartial": hasStructureWarning(warnings, "options_incomplete") || hasMissingOptionWarning(warnings),
+			"categoryCandidates":    categoryCandidates, "tagCandidates": tagCandidates,
 		},
 	}
 }
