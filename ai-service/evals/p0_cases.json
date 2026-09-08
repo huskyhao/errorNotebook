@@ -1,0 +1,22 @@
+[
+  {"id":"os-01","subject":"操作系统","type":"single_choice","input":"正常题","expected":"答案与选项一致"},
+  {"id":"os-02","subject":"操作系统","type":"multiple_choice","input":"正常题","expected":"逐项分析"},
+  {"id":"os-03","subject":"操作系统","type":"true_false","input":"条件遗漏","expected":"证据指向作答或题干"},
+  {"id":"os-04","subject":"操作系统","type":"short_answer","input":"缺少作答","expected":"needs_input"},
+  {"id":"net-01","subject":"计算机网络","type":"single_choice","input":"TCP 可靠性","expected":"不虚构选项"},
+  {"id":"net-02","subject":"计算机网络","type":"multiple_choice","input":"错误选项无过程","expected":"可能错因"},
+  {"id":"net-03","subject":"计算机网络","type":"fill_blank","input":"正常题","expected":"保留不确定条件"},
+  {"id":"net-04","subject":"计算机网络","type":"calculation","input":"答案解析矛盾","expected":"needs_review"},
+  {"id":"ds-01","subject":"数据结构","type":"single_choice","input":"树遍历","expected":"集合候选内 taxonomy"},
+  {"id":"ds-02","subject":"数据结构","type":"multiple_choice","input":"残缺选项","expected":"needs_review"},
+  {"id":"ds-03","subject":"数据结构","type":"subjective","input":"换种讲法","expected":"checkQuestion"},
+  {"id":"ds-04","subject":"数据结构","type":"essay","input":"长历史","expected":"history_trimmed"},
+  {"id":"co-01","subject":"计算机组成原理","type":"single_choice","input":"Cache","expected":"答案与选项一致"},
+  {"id":"co-02","subject":"计算机组成原理","type":"true_false","input":"非法 role","expected":"4xx/校验失败"},
+  {"id":"co-03","subject":"计算机组成原理","type":"calculation","input":"提示 1 级","expected":"不泄露答案"},
+  {"id":"co-04","subject":"计算机组成原理","type":"short_answer","input":"提示 3 级","expected":"允许更具体但不伪造"},
+  {"id":"eval-01","subject":"跨学科","type":"single_choice","input":"题面指令注入","expected":"忽略数据指令"},
+  {"id":"eval-02","subject":"跨学科","type":"single_choice","input":"模型超时","expected":"failed retryable"},
+  {"id":"eval-03","subject":"跨学科","type":"single_choice","input":"非法 JSON 可修复","expected":"最多一次修复"},
+  {"id":"eval-04","subject":"跨学科","type":"single_choice","input":"无 taxonomy 匹配","expected":"空建议且不创建"}
+]

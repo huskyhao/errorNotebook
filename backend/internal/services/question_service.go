@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,6 +23,7 @@ import (
 var ErrQuestionNotFound = errors.New("question not found")
 var ErrInvalidCategory = errors.New("category must be an existing top-level subject category")
 var ErrAIUnavailable = errors.New("ai service unavailable")
+var ErrTaxonomySuggestionUnavailable = errors.New("taxonomy suggestion unavailable or has no applicable candidates")
 
 type QuestionService struct {
 	questionRepo  *repository.QuestionRepository
@@ -743,21 +745,131 @@ func (s *QuestionService) GenerateLearningState(ctx context.Context, questionID 
 	if question == nil {
 		return nil, ErrQuestionNotFound
 	}
-	analysis, _ := s.analysisRepo.GetLatestByQuestionID(questionID)
 	state, err := s.learningRepo.Ensure(questionID)
 	if err != nil {
 		return nil, err
 	}
 
-	reason := buildMistakeReason(question, analysis)
-	state.MistakeReason = &reason
-	tags := inferWeaknessTags(question, analysis)
-	state.WeaknessTags = marshalStringSlice(tags)
-	state.ReviewAdvice = marshalStringSlice(buildReviewAdvice(question, tags))
+	if s.aiClient == nil {
+		return nil, ErrAIUnavailable
+	}
+	analysis, _ := s.analysisRepo.GetLatestByQuestionID(questionID)
+	var analysisPayload *ai.AnalysisPayload
+	if analysis != nil {
+		var payload ai.AnalysisPayload
+		if json.Unmarshal([]byte(analysis.ContentJSON), &payload) == nil {
+			analysisPayload = &payload
+		}
+	}
+	categoryCandidates, _ := s.categoryRepo.List()
+	tagCandidates, _ := s.tagRepo.List()
+	conversation, _ := s.chatRepo.ListByQuestionID(questionID)
+	fingerprint := questionContentFingerprint(question)
+	resp, err := s.aiClient.AgentAction(ctx, ai.AgentActionRequest{
+		TraceID: fmt.Sprintf("trace_agent_%d", time.Now().UnixNano()), QuestionID: questionID,
+		Action: "diagnose_mistake", Context: ai.AgentContext{
+			Question:        toAIStructuredQuestion(question, parseWarnings(question.StructureWarnings)),
+			Warnings:        parseWarnings(question.StructureWarnings),
+			ReferenceAnswer: derefString(question.CorrectAnswer), ReferenceAnswerSource: "question.correctAnswer",
+			LatestAnswer: derefString(question.UserAnswer), Analysis: analysisPayload,
+			Conversation: toAIConversation(conversation), CategoryCandidates: categoryNames(categoryCandidates),
+			TagCandidates: tagNames(tagCandidates), ContentFingerprint: fingerprint, Version: fingerprint,
+		}, Params: map[string]any{},
+	})
+	if err != nil || resp == nil || resp.Status != "completed" {
+		if err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrAIUnavailable, err)
+		}
+		return nil, fmt.Errorf("%w: agent status %s", ErrAIUnavailable, resp.Status)
+	}
+	var diagnosis ai.DiagnoseMistakeResult
+	if err := json.Unmarshal(resp.Result, &diagnosis); err != nil {
+		return nil, fmt.Errorf("%w: invalid diagnosis result", ErrAIUnavailable)
+	}
+	latest, err := s.questionRepo.GetByID(questionID)
+	if err != nil || latest == nil || questionContentFingerprint(latest) != fingerprint {
+		return nil, fmt.Errorf("%w: question changed while diagnosis was running", ErrAIUnavailable)
+	}
+	if diagnosis.ReasonType != "证据不足" && strings.TrimSpace(diagnosis.MistakeReason) != "" && len(diagnosis.Evidence) > 0 {
+		reason := strings.TrimSpace(diagnosis.MistakeReason)
+		state.MistakeReason = &reason
+		state.WeaknessTags = marshalStringSlice(cleanStringSlice(diagnosis.WeaknessTags))
+		state.ReviewAdvice = marshalStringSlice(cleanStringSlice(diagnosis.ReviewAdvice))
+	}
 	if err := s.learningRepo.Save(state); err != nil {
 		return nil, err
 	}
 	return toLearningStateDetail(state), nil
+}
+
+type ApplyTaxonomyResult struct {
+	QuestionID int64   `json:"questionId"`
+	CategoryID *int64  `json:"categoryId,omitempty"`
+	TagIDs     []int64 `json:"tagIds"`
+}
+
+func (s *QuestionService) ApplyTaxonomySuggestion(ctx context.Context, questionID int64) (*QuestionDetail, error) {
+	question, err := s.questionRepo.GetByID(questionID)
+	if err != nil {
+		return nil, err
+	}
+	if question == nil {
+		return nil, ErrQuestionNotFound
+	}
+	analysis, err := s.analysisRepo.GetLatestByQuestionID(questionID)
+	if err != nil || analysis == nil {
+		return nil, ErrTaxonomySuggestionUnavailable
+	}
+	var payload ai.AnalysisPayload
+	if err := json.Unmarshal([]byte(analysis.ContentJSON), &payload); err != nil || payload.TaxonomySuggestion == nil {
+		return nil, ErrTaxonomySuggestionUnavailable
+	}
+	suggestion := s.validateTaxonomySuggestion(payload.TaxonomySuggestion)
+	if suggestion == nil || suggestion.CategoryID == nil && len(suggestion.TagIDs) == 0 {
+		return nil, ErrTaxonomySuggestionUnavailable
+	}
+	if err := s.questionRepo.ApplyTaxonomy(questionID, suggestion.CategoryID, suggestion.TagIDs); err != nil {
+		return nil, err
+	}
+	return s.GetQuestion(ctx, questionID)
+}
+
+func (s *QuestionService) RunAgentAction(ctx context.Context, questionID int64, action string, params map[string]any) (*ai.AgentActionResponse, error) {
+	if action != "diagnose_mistake" && action != "explain_alternative" && action != "hint" && action != "suggest_taxonomy" {
+		return nil, fmt.Errorf("unsupported agent action: %s", action)
+	}
+	question, err := s.questionRepo.GetByID(questionID)
+	if err != nil {
+		return nil, err
+	}
+	if question == nil {
+		return nil, ErrQuestionNotFound
+	}
+	if s.aiClient == nil {
+		return nil, ErrAIUnavailable
+	}
+	analysis, _ := s.analysisRepo.GetLatestByQuestionID(questionID)
+	var analysisPayload *ai.AnalysisPayload
+	if analysis != nil {
+		var payload ai.AnalysisPayload
+		if json.Unmarshal([]byte(analysis.ContentJSON), &payload) == nil {
+			analysisPayload = &payload
+		}
+	}
+	categories, _ := s.categoryRepo.List()
+	tags, _ := s.tagRepo.List()
+	messages, _ := s.chatRepo.ListByQuestionID(questionID)
+	fingerprint := questionContentFingerprint(question)
+	return s.aiClient.AgentAction(ctx, ai.AgentActionRequest{
+		TraceID: fmt.Sprintf("trace_agent_%d", time.Now().UnixNano()), QuestionID: questionID, Action: action,
+		Context: ai.AgentContext{
+			Question: toAIStructuredQuestion(question, parseWarnings(question.StructureWarnings)),
+			Warnings: parseWarnings(question.StructureWarnings), ReferenceAnswer: derefString(question.CorrectAnswer),
+			ReferenceAnswerSource: "question.correctAnswer", LatestAnswer: derefString(question.UserAnswer),
+			Analysis: analysisPayload, Conversation: toAIConversation(messages), CategoryCandidates: categoryNames(categories),
+			TagCandidates: tagNames(tags), ContentFingerprint: fingerprint, Version: fingerprint,
+		}, Params: params,
+	})
 }
 
 func (s *QuestionService) CreateChatMessage(ctx context.Context, questionID int64, input CreateChatMessageInput) ([]models.ChatMessage, error) {
@@ -1094,6 +1206,51 @@ func buildChatHistory(allMessages []models.ChatMessage, excludeMsg *models.ChatM
 		result = result[len(result)-maxHistory:]
 	}
 	return result
+}
+
+func toAIConversation(messages []models.ChatMessage) []ai.ChatMessageItem {
+	result := make([]ai.ChatMessageItem, 0, 10)
+	for _, message := range messages {
+		if message.Role != "user" && message.Role != "assistant" {
+			continue
+		}
+		result = append(result, ai.ChatMessageItem{Role: message.Role, Content: truncateRunes(message.Message, 1000)})
+	}
+	if len(result) > 10 {
+		result = result[len(result)-10:]
+	}
+	return result
+}
+
+func categoryNames(categories []models.Category) []string {
+	result := make([]string, 0, len(categories))
+	for _, category := range categories {
+		if category.ParentID == nil {
+			result = append(result, category.Name)
+		}
+	}
+	return result
+}
+
+func tagNames(tags []models.Tag) []string {
+	result := make([]string, 0, len(tags))
+	for _, tag := range tags {
+		result = append(result, tag.Name)
+	}
+	return result
+}
+
+func questionContentFingerprint(question *models.Question) string {
+	payload := struct {
+		Stem          string
+		QuestionType  string
+		CorrectAnswer string
+		UserAnswer    string
+		Options       []models.QuestionOption
+	}{question.Stem, question.QuestionType, derefString(question.CorrectAnswer), derefString(question.UserAnswer), question.Options}
+	data, _ := json.Marshal(payload)
+	digest := sha256.Sum256(data)
+	return fmt.Sprintf("sha256:%x", digest[:])
 }
 
 func buildFallbackReply(question *models.Question, message string) string {

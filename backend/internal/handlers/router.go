@@ -34,6 +34,8 @@ func NewRouter(
 			api.GET("/questions/:id/learning-state", questionHandler.GetLearningState)
 			api.PATCH("/questions/:id/learning-state", questionHandler.UpdateLearningState)
 			api.POST("/questions/:id/learning-state/generate", questionHandler.GenerateLearningState)
+			api.POST("/questions/:id/taxonomy-suggestion/apply", questionHandler.ApplyTaxonomySuggestion)
+			api.POST("/questions/:id/agent-actions", questionHandler.RunAgentAction)
 			api.POST("/questions/:id/chat", questionHandler.CreateChatMessage)
 			api.GET("/questions/:id/chat", questionHandler.GetChatMessages)
 			api.POST("/questions/:id/favorite", questionHandler.ToggleFavorite)

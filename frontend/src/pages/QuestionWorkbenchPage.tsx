@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { requestJson, buildConversation } from '../utils';
-import type { QuestionItem, AnalysisItem, ChatMessage, TagItem, CategoryTreeNode, BatchImportResult, BatchProgress, OptionItem, LearningState } from '../types';
+import type { QuestionItem, AnalysisItem, ChatMessage, TagItem, CategoryTreeNode, BatchImportResult, BatchProgress, OptionItem, LearningState, AgentActionName, AgentActionResponse } from '../types';
 import TopBar from '../components/TopBar';
 import SideNavigation from '../components/SideNavigation';
 import QuestionSidebar from '../components/QuestionSidebar';
@@ -57,6 +57,7 @@ export default function QuestionWorkbenchPage() {
   const [draftQuestionType, setDraftQuestionType] = useState('subjective');
   const [draftOptions, setDraftOptions] = useState<OptionItem[]>([]);
   const [generatingLearning, setGeneratingLearning] = useState(false);
+  const [agentActionPending, setAgentActionPending] = useState(false);
   const [error, setError] = useState('');
   const [deletingId, setDeletingId] = useState<number | null>(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState<number | null>(null);
@@ -477,6 +478,45 @@ export default function QuestionWorkbenchPage() {
     }
   }
 
+  async function handleAgentAction(action: AgentActionName, params: Record<string, unknown> = {}) {
+    if (!selectedQuestion) return;
+    setError('');
+    setAgentActionPending(true);
+    try {
+      const result = await requestJson<AgentActionResponse>(`/questions/${selectedQuestion.id}/agent-actions`, {
+        method: 'POST',
+        body: JSON.stringify({ action, params }),
+      });
+      if (result.status !== 'completed' || !result.result) {
+        setError(result.error?.message ?? '该动作需要补充信息或人工复核');
+        return;
+      }
+      const data = result.result;
+      const content = data.explanation
+        ? `${data.explanation}\n\n${data.focusPoints?.join('；') ?? ''}\n${data.checkQuestion ?? ''}`
+        : data.hint
+          ? `第 ${data.hintLevel ?? 1} 级提示：${data.hint}\n\n${data.nextQuestion ?? ''}`
+          : `${data.mistakeReason ?? ''}\n\n复习建议：${data.reviewAdvice?.join('；') ?? ''}`;
+      setChatMessages((prev) => [...prev, { id: -Date.now(), questionId: selectedQuestion.id, role: 'assistant', message: content, createdAt: new Date().toISOString() }]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Agent 动作失败');
+    } finally {
+      setAgentActionPending(false);
+    }
+  }
+
+  async function handleApplyTaxonomySuggestion() {
+    if (!selectedQuestion) return;
+    try {
+      const updated = await requestJson<QuestionItem>(`/questions/${selectedQuestion.id}/taxonomy-suggestion/apply`, { method: 'POST', body: JSON.stringify({}) });
+      setSelectedQuestion(updated);
+      setQuestions((prev) => prev.map((item) => item.id === updated.id ? updated : item));
+      await loadTaxonomy();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '应用分类建议失败');
+    }
+  }
+
 
   async function handleSelectOption(optionKey: string) {
     if (!selectedQuestion) return;
@@ -691,12 +731,15 @@ export default function QuestionWorkbenchPage() {
           onRetryMessage={handleRetryMessage}
           onReanalyze={handleReanalyze}
           onGenerateLearningState={handleGenerateLearningState}
+          onAgentAction={handleAgentAction}
+          onApplyTaxonomySuggestion={handleApplyTaxonomySuggestion}
           attachments={chatAttachments}
           onAddAttachments={handleAddChatAttachments}
           onRemoveAttachment={handleRemoveChatAttachment}
           reanalyzing={reanalyzing}
           sendingMessage={sendingMessage}
           generatingLearning={generatingLearning}
+          agentActionPending={agentActionPending}
         />
         <ResizableDivider
           onResize={handleDetailResize}

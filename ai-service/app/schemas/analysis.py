@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -37,6 +37,8 @@ class AnalysisPayload(BaseModel):
 class AnalysisResponse(BaseModel):
     traceId: str
     questionId: int
-    status: str
+    status: Literal["completed", "needs_review", "failed"]
     analysis: AnalysisPayload
-    cost: dict[str, int]
+    cost: dict[str, int | None] = Field(default_factory=dict)
+    warnings: list[str] = Field(default_factory=list)
+    error: dict[str, object] | None = None

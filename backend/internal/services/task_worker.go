@@ -137,15 +137,23 @@ func (s *QuestionService) processAnalysisJob(ctx context.Context, job *models.Jo
 	}); err != nil {
 		return fmt.Errorf("save analysis: %w", err)
 	}
-	question.AnalysisStatus = "completed"
+	question.AnalysisStatus = resp.Status
+	if question.AnalysisStatus == "" {
+		question.AnalysisStatus = "completed"
+	}
 	if answer != "" {
 		question.CorrectAnswer = &answer
 	}
 	if err := s.questionRepo.Update(question); err != nil {
 		return fmt.Errorf("save question analysis status: %w", err)
 	}
-	job.ProcessingStage = "completed"
-	_ = s.jobRepo.Update(markJobCompleted(job))
+	if resp.Status == "needs_review" {
+		job.ProcessingStage = "needs_review"
+		_ = s.jobRepo.Update(markJobNeedsReview(job))
+	} else {
+		job.ProcessingStage = "completed"
+		_ = s.jobRepo.Update(markJobCompleted(job))
+	}
 	return nil
 }
 

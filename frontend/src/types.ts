@@ -111,6 +111,29 @@ export type CategoryTreeNode = {
 };
 export type NavItem = { key: string; label: string; icon: React.ReactNode; path?: string };
 export type PromptAction = { key: string; label: string; prompt: string; icon: React.ReactNode };
+export type AgentActionName = 'diagnose_mistake' | 'explain_alternative' | 'hint' | 'suggest_taxonomy';
+export type AgentActionResponse = {
+  traceId: string;
+  questionId: number;
+  action: AgentActionName;
+  status: 'completed' | 'needs_input' | 'needs_review' | 'failed';
+  result?: {
+    mistakeReason?: string;
+    reasonType?: string;
+    evidence?: string[];
+    weaknessTags?: string[];
+    reviewAdvice?: string[];
+    explanation?: string;
+    focusPoints?: string[];
+    checkQuestion?: string;
+    hint?: string;
+    nextQuestion?: string;
+    hintLevel?: number;
+    revealsAnswer?: boolean;
+  };
+  warnings?: string[];
+  error?: { code?: string; message?: string };
+};
 
 export type PracticeSessionListItem = {
   id: number;

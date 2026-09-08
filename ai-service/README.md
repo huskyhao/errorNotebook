@@ -1,9 +1,10 @@
 # ai-service
 
-`ai-service` 是 ErroNotebook 的 AI 能力服务，当前负责两类能力：
+`ai-service` 是 ErroNotebook 的 AI 能力服务，当前负责四类能力：
 
 1. OCR 识图与题目结构化
 2. 题目解析与 LLM 结构化输出
+3. 单题辅导 Agent：错因诊断、换种讲法、分级提示、分类标签建议
 
 它可以单独启动和调试，不需要先启动完整项目。`Go` 业务端联调只是后续集成阶段需要。
 
@@ -14,6 +15,8 @@
 * `GET /internal/v1/health`
 * `POST /internal/v1/ocr/parse`
 * `POST /internal/v1/analyze/question`
+* `POST /internal/v1/chat/question`
+* `POST /internal/v1/agent/actions`
 * `POST /internal/v1/debug/ocr`
 * `POST /internal/v1/debug/analyze/mock-question`
 
@@ -41,8 +44,9 @@
 说明：
 
 * `OCR_BACKEND=auto` 时，会优先尝试 `PaddleOCR`，失败则自动回落到 `mock`
-* 只要 `OPENAI_BASE_URL / OPENAI_API_KEY / OPENAI_MODEL` 三项配置完整，解析会走真实 LLM
-* 如果三项未配置完整，则解析默认走 `mock`
+* `LLM_BACKEND=mock` 明确使用可追溯 mock；`LLM_BACKEND=openai` 或 `openai_compatible` 时配置缺失会返回 `AI_CONFIG_MISSING`，不会伪装成成功
+* `LLM_BACKEND=auto` 且三项配置完整时才会走真实 LLM；真实调用的超时、429、临时 5xx 会在动作预算内重试
+* `AI_MAX_ATTEMPTS` 默认 3（包含首次调用），结构修复最多 1 次；`AI_ACTION_TIMEOUT_SECONDS` 控制单动作超时
 
 ## 启动方式
 
@@ -113,7 +117,7 @@ curl.exe -X POST "http://localhost:8001/internal/v1/debug/analyze/mock-question"
 
 ### 验证正式解析接口
 
-正式接口是：
+正式接口是 multipart：
 
 * `POST /internal/v1/analyze/question`
 
@@ -154,8 +158,8 @@ curl.exe -X POST "http://localhost:8001/internal/v1/debug/analyze/mock-question"
 ```powershell
 curl.exe -X POST "http://localhost:8001/internal/v1/analyze/question" ^
   -H "accept: application/json" ^
-  -H "Content-Type: application/json" ^
-  -d "@analysis-request.json"
+  -F "payload=<analysis-request.json" ^
+  -F "file=@test.png;type=image/png"
 ```
 
 ## 日志说明
@@ -206,5 +210,22 @@ $env:OCR_BACKEND="paddleocr"
 3. 用 `/internal/v1/debug/ocr` 验证 OCR
 4. 用 `/internal/v1/debug/analyze/mock-question` 验证解析
 5. 再测正式接口 `/internal/v1/ocr/parse` 和 `/internal/v1/analyze/question`
+
+## 单题辅导 Agent
+
+`POST /internal/v1/agent/actions` 只接受 Go 构建的题目上下文，Python 不凭 `questionId` 查询业务库。`action` 仅允许：`diagnose_mistake`、`explain_alternative`、`hint`、`suggest_taxonomy`。
+
+响应统一包含 `traceId`、`questionId`、`action`、`status`、类型化 `result`、`warnings`、`error` 和 `meta`。`status` 为 `completed`、`needs_input`、`needs_review` 或 `failed`；`meta.source` 明确标记 `mock`/`real`。错误至少包含 `code`、`message`、`retryable`、`traceId`，不透传密钥或上游原始响应。
+
+四类动作结果：`diagnose_mistake` 返回错因、证据、薄弱标签和复习建议；`explain_alternative` 返回换种讲法、重点和检查问题；`hint` 返回 1/2/3 级提示、下一问及泄露标记；`suggest_taxonomy` 只在 Go 提供的候选中返回建议且不会自动生效。缺少作答返回 `needs_input`，只有错误选项而无过程时只能给可能错因。
+
+离线评测案例位于 `evals/p0_cases.json`，共 20 例，覆盖 408 四门学科、八类题型、坏输入和故障场景。运行：
+
+```powershell
+python evals/run_p0_eval.py
+python -m pytest -q
+```
+
+未配置真实 provider 时，报告只代表 mock/契约结果，不代表真实模型内容质量。
 
 这样可以先确认 AI 服务本身，再进入 Go 编排联调。

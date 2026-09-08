@@ -105,6 +105,55 @@ type AnalyzeQuestionResponse struct {
 	Cost       map[string]int  `json:"cost"`
 }
 
+type AgentActionRequest struct {
+	TraceID    string         `json:"traceId"`
+	QuestionID int64          `json:"questionId"`
+	Action     string         `json:"action"`
+	Context    AgentContext   `json:"context"`
+	Params     map[string]any `json:"params,omitempty"`
+}
+
+type AgentContext struct {
+	Question              StructuredQuestion `json:"question"`
+	Warnings              []string           `json:"warnings,omitempty"`
+	ReferenceAnswer       string             `json:"referenceAnswer,omitempty"`
+	ReferenceAnswerSource string             `json:"referenceAnswerSource,omitempty"`
+	LatestAnswer          string             `json:"latestAnswer,omitempty"`
+	Analysis              *AnalysisPayload   `json:"analysis,omitempty"`
+	Conversation          []ChatMessageItem  `json:"conversation,omitempty"`
+	CategoryCandidates    []string           `json:"categoryCandidates,omitempty"`
+	TagCandidates         []string           `json:"tagCandidates,omitempty"`
+	ContentFingerprint    string             `json:"contentFingerprint,omitempty"`
+	Version               string             `json:"version,omitempty"`
+}
+
+type AgentActionResponse struct {
+	TraceID    string          `json:"traceId"`
+	QuestionID int64           `json:"questionId"`
+	Action     string          `json:"action"`
+	Status     string          `json:"status"`
+	Result     json.RawMessage `json:"result"`
+	Warnings   []string        `json:"warnings"`
+	Error      *AIError        `json:"error,omitempty"`
+	Meta       map[string]any  `json:"meta"`
+}
+
+type AIError struct {
+	Code      string `json:"code"`
+	Message   string `json:"message"`
+	Retryable bool   `json:"retryable"`
+	TraceID   string `json:"traceId,omitempty"`
+}
+
+type DiagnoseMistakeResult struct {
+	MistakeReason string   `json:"mistakeReason"`
+	ReasonType    string   `json:"reasonType"`
+	Evidence      []string `json:"evidence"`
+	WeaknessTags  []string `json:"weaknessTags"`
+	ReviewAdvice  []string `json:"reviewAdvice"`
+	Uncertainties []string `json:"uncertainties"`
+}
+
 func (c *Client) ParseQuestionImage(
 	ctx context.Context,
 	questionID int64,
@@ -292,6 +341,29 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, erro
 		return nil, err
 	}
 
+	return &result, nil
+}
+
+func (c *Client) AgentAction(ctx context.Context, req AgentActionRequest) (*AgentActionResponse, error) {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("marshal agent action request: %w", err)
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/internal/v1/agent/actions", bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("build agent action request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	var result AgentActionResponse
+	if err := c.doJSON(httpReq, &result); err != nil {
+		return nil, err
+	}
+	if result.Status == "failed" {
+		if result.Error != nil {
+			return nil, fmt.Errorf("agent action failed: %s: %s", result.Error.Code, result.Error.Message)
+		}
+		return nil, fmt.Errorf("agent action failed")
+	}
 	return &result, nil
 }
 

@@ -1,6 +1,6 @@
 import React, { useRef } from 'react';
 import { formatTime } from '../utils';
-import type { QuestionItem, AnalysisItem, ChatMessage, PromptAction } from '../types';
+import type { QuestionItem, AnalysisItem, ChatMessage, PromptAction, AgentActionName } from '../types';
 import MarkdownRenderer from './MarkdownRenderer';
 import aiAvatar from '../assets/line-husky-nobackground.png';
 import {
@@ -12,14 +12,12 @@ import {
   ImageIcon,
   ArrowUpRightIcon,
   CompassIcon,
-  ChainIcon,
 } from './icons';
 
 const promptActions: PromptAction[] = [
   { key: 'summarize_mistake', label: '归纳错因', prompt: '请帮我归纳这道题的错因，并给出下次避免的方法。', icon: <CompassIcon /> },
   { key: 'explain_differently', label: '换种讲法', prompt: '请换一种更直观的方式讲解这道题。', icon: <SparkleIcon /> },
-  { key: 'similar_question', label: '生成相似题', prompt: '请基于这道题生成一道相似题，并给出答案。', icon: <NotebookIcon /> },
-  { key: 'review_plan', label: '加入复习计划', prompt: '请根据这道题生成一个短期复习计划。', icon: <ChainIcon /> },
+  { key: 'hint', label: '分级提示', prompt: '', icon: <NotebookIcon /> },
 ];
 
 interface ReasoningCenterProps {
@@ -32,12 +30,15 @@ interface ReasoningCenterProps {
   onRetryMessage: (message: ChatMessage) => void;
   onReanalyze: () => void;
   onGenerateLearningState: () => void;
+  onAgentAction: (action: AgentActionName, params?: Record<string, unknown>) => void;
+  onApplyTaxonomySuggestion: () => void;
   attachments: File[];
   onAddAttachments: (files: File[]) => void;
   onRemoveAttachment: (index: number) => void;
   reanalyzing: boolean;
   sendingMessage: boolean;
   generatingLearning: boolean;
+  agentActionPending: boolean;
 }
 
 export default function ReasoningCenter({
@@ -50,12 +51,15 @@ export default function ReasoningCenter({
   onRetryMessage,
   onReanalyze,
   onGenerateLearningState,
+  onAgentAction,
+  onApplyTaxonomySuggestion,
   attachments,
   onAddAttachments,
   onRemoveAttachment,
   reanalyzing,
   sendingMessage,
   generatingLearning,
+  agentActionPending,
 }: ReasoningCenterProps) {
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -69,6 +73,14 @@ export default function ReasoningCenter({
   function applyPromptAction(action: PromptAction) {
     if (action.key === 'summarize_mistake') {
       onGenerateLearningState();
+      return;
+    }
+    if (action.key === 'explain_differently') {
+      onAgentAction('explain_alternative', { focus: '当前不理解的概念或步骤' });
+      return;
+    }
+    if (action.key === 'hint') {
+      onAgentAction('hint', { hintLevel: 1 });
       return;
     }
     setReply(action.prompt);
@@ -108,6 +120,7 @@ export default function ReasoningCenter({
                       <span>AI 分类建议（待确认）</span>
                       {analysis.content.taxonomySuggestion.categoryName ? <strong>{analysis.content.taxonomySuggestion.categoryName}</strong> : null}
                       {analysis.content.taxonomySuggestion.tagNames?.map((tag) => <em key={tag}>{tag}</em>)}
+                      <button className="text-button" type="button" onClick={onApplyTaxonomySuggestion}>确认应用</button>
                     </div>
                   ) : null}
                 </div>
@@ -185,9 +198,10 @@ export default function ReasoningCenter({
                 className="chip"
                 type="button"
                 onClick={() => applyPromptAction(action)}
+                disabled={agentActionPending || (action.key === 'summarize_mistake' && generatingLearning)}
               >
                 {action.icon}
-                <span>{action.key === 'summarize_mistake' && generatingLearning ? '归纳中...' : action.label}</span>
+                <span>{agentActionPending && action.key !== 'summarize_mistake' ? '执行中...' : action.key === 'summarize_mistake' && generatingLearning ? '归纳中...' : action.label}</span>
               </button>
             ))}
           </div>

@@ -1353,4 +1353,14 @@ func (c *Client) ParseQuestionImage(
 6. PDF 页面、入口、批次模型、接口与 `exam_parser` 已从 MVP 移除
 7. 下一阶段直接进入学习状态模型、错因归纳、掌握度追踪与推荐题目接口
 
+---
+
+# 19. P0 单题辅导 Agent 实现基线（2026-09-07）
+
+当前 P0 已将单题 Agent 收敛为四类显式动作：`diagnose_mistake`、`explain_alternative`、`hint`、`suggest_taxonomy`。Python 只接收 Go 构建的 `QuestionContext`，不凭题目 ID 查询业务库；Go 负责数据归属、版本指纹、保存和最终分类标签生效。
+
+动作接口统一返回 `completed`、`needs_input`、`needs_review`、`failed`，错误包含 `code`、`message`、`retryable`、`traceId`。真实 provider 与 mock 必须显式标记，调用预算默认最多 3 次且最多 1 次结构修复。错因诊断只有在存在作答和证据时才能覆盖学习状态，AI 不直接改变掌握度和练习统计。
+
+P0 的 Go 对外接入包括中栏动作代理和分类建议确认应用；Python 正式解析接口使用 multipart 的 `payload`/`file` 契约。图片追问、相似题生成和主观题辅助批改继续作为 P1，不进入当前交付承诺。
+
 这套方案足够工程化，同时又不会因为过早引入复杂分布式设计而拖慢 MVP 落地。

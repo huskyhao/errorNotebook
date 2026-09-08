@@ -659,6 +659,35 @@ AI 解析结果可以包含可选的 `content.taxonomySuggestion`：
 
 ## 10. 当前限制
 
+## 10. P0 单题辅导 Agent
+
+### 10.1 触发动作
+
+`POST /api/v1/questions/{id}/agent-actions`
+
+请求：
+
+```json
+{
+  "action": "hint",
+  "params": {"hintLevel": 1}
+}
+```
+
+Go 根据题目、作答、最新解析、必要对话和现有分类/标签候选构建上下文，再调用 Python `/internal/v1/agent/actions`。前端不直连 Python。动作仅允许 `diagnose_mistake`、`explain_alternative`、`hint`、`suggest_taxonomy`；Python 返回类型化结果和 `completed` / `needs_input` / `needs_review` / `failed` 状态。
+
+`diagnose_mistake` 的成功结果包含 `mistakeReason`、`reasonType`、`evidence`、`weaknessTags`、`reviewAdvice`、`uncertainties`。Go 仅在证据充分且题目内容指纹未变化时写入学习状态，不修改掌握度、正确率、错题次数、连续答对和复习日期。AI 失败时保留旧值。
+
+### 10.2 确认 taxonomy 建议
+
+`POST /api/v1/questions/{id}/taxonomy-suggestion/apply`
+
+该操作读取最新解析中的建议，重新校验题目、现有顶层分类和标签归属，并在事务中替换分类/标签关联。不会自动创建分类或标签；无匹配、候选已删除和重复点击返回明确冲突错误。
+
+Python 侧动作契约、错误结构、multipart 解析示例和离线评测见 `ai-service/README.md` 与 `ai-service/evals/`。当前未配置真实 provider 时，测试结果只代表 mock/契约链路。
+
+## 11. 当前限制
+
 * 目前尚未接入真实鉴权，业务用户固定为 `1`。
 * PDF 导入、试卷拆题和批次校对接口已从 MVP 移除；当前稳定范围是图片导入和手动文本导入。
 * 图片先写入持久化对象存储，再由数据库 worker 异步处理 OCR 和解析；默认适配器为本地对象存储，后续可替换为 S3/MinIO。

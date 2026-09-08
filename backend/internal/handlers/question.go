@@ -333,6 +333,58 @@ func (h *QuestionHandler) GenerateLearningState(c *gin.Context) {
 	response.OK(c, state)
 }
 
+func (h *QuestionHandler) ApplyTaxonomySuggestion(c *gin.Context) {
+	id, ok := parseIDParam(c)
+	if !ok {
+		return
+	}
+	question, err := h.questionService.ApplyTaxonomySuggestion(c.Request.Context(), id)
+	if err != nil {
+		if errors.Is(err, services.ErrQuestionNotFound) {
+			response.Error(c, http.StatusNotFound, "QUESTION_NOT_FOUND", "question not found")
+			return
+		}
+		if errors.Is(err, services.ErrTaxonomySuggestionUnavailable) {
+			response.Error(c, http.StatusConflict, "TAXONOMY_SUGGESTION_UNAVAILABLE", err.Error())
+			return
+		}
+		response.Error(c, http.StatusBadRequest, "TAXONOMY_SUGGESTION_APPLY_FAILED", err.Error())
+		return
+	}
+	response.OK(c, question)
+}
+
+type runAgentActionRequest struct {
+	Action string         `json:"action" binding:"required"`
+	Params map[string]any `json:"params"`
+}
+
+func (h *QuestionHandler) RunAgentAction(c *gin.Context) {
+	id, ok := parseIDParam(c)
+	if !ok {
+		return
+	}
+	var req runAgentActionRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.Error(c, http.StatusBadRequest, "INVALID_REQUEST", err.Error())
+		return
+	}
+	result, err := h.questionService.RunAgentAction(c.Request.Context(), id, req.Action, req.Params)
+	if err != nil {
+		if errors.Is(err, services.ErrQuestionNotFound) {
+			response.Error(c, http.StatusNotFound, "QUESTION_NOT_FOUND", "question not found")
+			return
+		}
+		if errors.Is(err, services.ErrAIUnavailable) {
+			response.Error(c, http.StatusBadGateway, "AI_AGENT_UNAVAILABLE", err.Error())
+			return
+		}
+		response.Error(c, http.StatusBadRequest, "AGENT_ACTION_FAILED", err.Error())
+		return
+	}
+	response.OK(c, result)
+}
+
 type createChatMessageRequest struct {
 	Message string `json:"message" binding:"required"`
 }

@@ -16,6 +16,6 @@ async def chat_question(payload: ChatRequest) -> ChatResponse:
         return await chat_service.chat(payload)
     except OpenAICompatibleError as exc:
         raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=str(exc),
+            status_code=exc.status_code,
+            detail={"code": exc.code, "message": exc.message, "retryable": exc.retryable, "traceId": payload.traceId},
         ) from exc

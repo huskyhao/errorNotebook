@@ -61,6 +61,11 @@ class Settings:
     openai_timeout_seconds: int = _get_int("OPENAI_TIMEOUT_SECONDS", 30)
     openai_temperature: float = _get_float("OPENAI_TEMPERATURE", 0.2)
     openai_max_tokens: int = _get_int("OPENAI_MAX_TOKENS", 1200)
+    ai_max_attempts: int = _get_int("AI_MAX_ATTEMPTS", 3)
+    ai_max_repairs: int = _get_int("AI_MAX_REPAIRS", 1)
+    ai_action_timeout_seconds: int = _get_int("AI_ACTION_TIMEOUT_SECONDS", 45)
+    ai_history_max_items: int = _get_int("AI_HISTORY_MAX_ITEMS", 12)
+    ai_context_max_chars: int = _get_int("AI_CONTEXT_MAX_CHARS", 24000)
 
     vision_base_url: str = os.getenv("VISION_BASE_URL", "").rstrip("/")
     vision_api_key: str = os.getenv("VISION_API_KEY", "")
@@ -71,7 +76,9 @@ class Settings:
 
     @property
     def openai_enabled(self) -> bool:
-        return bool(self.openai_base_url and self.openai_api_key and self.openai_model)
+        return self.llm_backend in {"openai", "openai_compatible", "auto"} and bool(
+            self.openai_base_url and self.openai_api_key and self.openai_model
+        )
 
     @property
     def vision_enabled(self) -> bool:

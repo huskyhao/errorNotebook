@@ -1,3 +1,45 @@
+# 2026-09-09 当前版本提交信息与下一阶段 Goal
+
+## 推荐提交信息
+
+`feat: 完成单题辅导 Agent P0 升级与工作台接入`
+
+建议提交正文：
+
+- 增加可靠模型调用、统一错误和结构化输出校验。
+- 实现错因诊断、换种讲法、分级提示、taxonomy 建议四类动作。
+- 接通 Go 动作代理、学习状态保存、分类建议确认和中栏交互。
+- 增加 Python/Go 契约测试、20 例离线评测及相关文档。
+
+## 下一阶段决策
+
+- 先修复标准解析未传 taxonomy 候选导致分类建议始终为空的问题，实现“自动生成建议、用户确认后生效”，继续禁止 Python 写业务库或自动创建分类标签。
+- P1 依次实现真实图片追问、单道相似题候选、主观题辅助批改；三项都必须有类型化结果、版本/指纹校验、幂等确认、失败不伪装成功和真实/mock 区分。
+- 图片追问必须传实际图片字节或安全内部 URL；相似题确认前不进入正式题库；主观题 AI 结果只是评分建议，最终分数和学习状态仍由 Go 控制。
+- 完整可执行指令见 `ai-service/AGENT_GOAL.md` 第 5 节。本轮只生成下一阶段 Goal，没有启动 P1 实现。
+
+---
+
+# 2026-09-07 ai-service P0 单题辅导 Agent 实施与验收
+
+## 本轮已完成
+
+- 按 `ai-service/AGENT_GOAL.md` 第 3 节执行 P0；保留工作区原有内容，未执行 reset/clean。
+- Python 增加可靠调用基础：async 调用通过线程隔离阻塞 urllib，真实/mock 明确区分，标准错误包含 code/message/retryable/traceId；动作调用最多 3 次，结构修复最多 1 次。
+- Python 增加显式 `AgentDispatcher` 与 `/internal/v1/agent/actions`，完成 `diagnose_mistake`、`explain_alternative`、`hint`、`suggest_taxonomy` 四类动作及上下文、历史 role、候选 taxonomy 和题面质量约束。
+- Go 增加动作类型/client，`归纳错因` 调用诊断并按证据保存；保存前做题目内容指纹校验，不改变掌握度、正确率、错题次数和复习日期。
+- Go 增加 `POST /api/v1/questions/{id}/agent-actions` 与 `POST /api/v1/questions/{id}/taxonomy-suggestion/apply`；分类/标签确认应用使用事务、现有候选和合法性校验，不自动创建 taxonomy。
+- 三栏工作台接入“换种讲法”“分级提示”“归纳错因”和“确认应用分类建议”；相似题生成等 P1 能力未实施。
+- 新增 20 例离线评测样例、Agent 契约/故障测试和评测脚本；README、backend API、project/webdesign 需保持与本记录一致。
+
+## 验证结论
+
+- Python 基线及新增测试通过后，以 `python -m pytest -q` 为准记录结果。
+- Go 测试业务包曾通过，但当前环境 Go build cache 位于 `C:\Users\Husky\AppData\Local\go-build`，裁剪/写入时报 `Access is denied`；需在可写 Go cache 环境复跑完整 `go test ./...`。
+- 前端应执行 `npm run build`；真实 provider、数据库和真实端到端动作未配置时，只能认定 mock/契约链路，不能宣称真实模型质量验收完成。
+
+---
+
 # 2026-09-07 ai-service Agent 能力提升计划与 Goal 指令
 
 ## 本轮范围

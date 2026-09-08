@@ -241,3 +241,52 @@ func (r *QuestionRepository) SetTags(questionID int64, tagIDs []int64) error {
 		return nil
 	})
 }
+
+// ApplyTaxonomy atomically validates and applies an existing top-level category
+// and existing tags. It never creates taxonomy rows from an AI suggestion.
+func (r *QuestionRepository) ApplyTaxonomy(questionID int64, categoryID *int64, tagIDs []int64) error {
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		if categoryID != nil {
+			var category models.Category
+			if err := tx.Where("id = ? AND parent_id IS NULL", *categoryID).First(&category).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					return fmt.Errorf("category not found or not top-level")
+				}
+				return fmt.Errorf("validate category: %w", err)
+			}
+		}
+		uniqueTagIDs := make([]int64, 0, len(tagIDs))
+		seen := make(map[int64]struct{}, len(tagIDs))
+		for _, tagID := range tagIDs {
+			if tagID <= 0 {
+				return ErrTagNotFound
+			}
+			if _, exists := seen[tagID]; exists {
+				continue
+			}
+			seen[tagID] = struct{}{}
+			uniqueTagIDs = append(uniqueTagIDs, tagID)
+		}
+		if len(uniqueTagIDs) > 0 {
+			var count int64
+			if err := tx.Model(&models.Tag{}).Where("id IN ?", uniqueTagIDs).Count(&count).Error; err != nil {
+				return fmt.Errorf("validate tags: %w", err)
+			}
+			if count != int64(len(uniqueTagIDs)) {
+				return ErrTagNotFound
+			}
+		}
+		if err := tx.Model(&models.Question{}).Where("id = ?", questionID).Update("category_id", categoryID).Error; err != nil {
+			return fmt.Errorf("apply category: %w", err)
+		}
+		if err := tx.Where("question_id = ?", questionID).Delete(&models.QuestionTag{}).Error; err != nil {
+			return fmt.Errorf("replace question tags: %w", err)
+		}
+		for _, tagID := range uniqueTagIDs {
+			if err := tx.Create(&models.QuestionTag{QuestionID: questionID, TagID: tagID}).Error; err != nil {
+				return fmt.Errorf("insert question tag: %w", err)
+			}
+		}
+		return nil
+	})
+}

@@ -5,6 +5,7 @@ import logging
 import time
 
 from app.core.logging import format_log
+from app.core.config import settings
 from app.schemas.chat import ChatMessageItem, ChatRequest, ChatResponse
 from app.services.openai_client import OpenAICompatibleError, build_openai_client
 
@@ -48,6 +49,8 @@ class ChatService:
 
         start_ms = int(time.time() * 1000)
         if self._client is None:
+            if settings.llm_backend != "mock":
+                raise OpenAICompatibleError("AI_CONFIG_MISSING", "real AI provider is not configured", False, 503)
             await asyncio.sleep(1)
             reply = self._build_mock_reply(request)
             cost = {}
@@ -57,8 +60,7 @@ class ChatService:
                 cost = {"completionTokens": tokens}
             except OpenAICompatibleError:
                 logger.exception(format_log("chat.llm_failed", question_id=request.questionId))
-                reply = "抱歉，AI 服务暂时不可用，请稍后重试。"
-                cost = {}
+                raise
 
         elapsed_ms = int(time.time() * 1000) - start_ms
         logger.info(
@@ -69,6 +71,7 @@ class ChatService:
                 history_len=len(request.history),
                 reply_len=len(reply),
                 chat_ms=elapsed_ms,
+                provider=self._client.model if self._client else "mock",
                 **cost,
             )
         )

@@ -5,7 +5,17 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 
-QuestionType = Literal["single_choice", "multiple_choice", "subjective", "unknown"]
+QuestionType = Literal[
+    "single_choice",
+    "multiple_choice",
+    "true_false",
+    "fill_blank",
+    "subjective",
+    "short_answer",
+    "essay",
+    "calculation",
+    "unknown",
+]
 
 
 class OptionItem(BaseModel):

@@ -1,6 +1,6 @@
 # ai-service 下一阶段计划与 Goal 指令
 
-更新时间：2026-09-07。本文是待执行计划，不代表功能已经完成。
+更新时间：2026-09-09。第 3 节 P0 指令已经执行；第 5 节是下一阶段待执行 Goal，不代表 P1 已完成。
 
 ## 1. 当前判断
 
@@ -108,3 +108,81 @@ P1 不属于下面指令的完成条件。暂不增加知识图谱、向量库�
 > 请将 `ai-service/AGENT_GOAL.md` 第 3 节完整指令设为本次 goal，并按其中 P0 范围实施、测试和验收；先检查当前工作区，保留已有修改。P1 留待后续。
 
 这里提供的是自然语言目标内容，不依赖特定客户端的命令语法。本轮没有启动目标执行，也没有验证实际模型效果。
+
+## 5. Taxonomy 闭环与 P1 完整 Goal 指令
+
+以下指令用于下一次实现任务，范围包括：补齐 P0 遗留的 taxonomy 自动建议链路，以及 P1 图片追问、相似题生成、主观题辅助批改。分类和标签仍由用户确认后生效，不允许模型直接写业务库或自动创建 taxonomy。
+
+```text
+请以“完成 ErroNotebook taxonomy 建议闭环与 ai-service P1 单题辅导能力，并接通现有 Go 工作台和练习流程”为本次 goal。请实际完成实现、测试、评测和文档，不只输出方案。先检查当前工作区并保留已有修改；严格遵守 Question 核心实体、前端只访问 Go、Go 掌握业务状态和数据库、Python 只处理 OCR/LLM/多模态结构化结果的服务边界。
+
+一、确认基线与控制范围
+1. 先完整阅读 AGENTS.md、project.md、webdesign.md、talk.md 最新记录、ai-service/AGENT_GOAL.md、P0 评测报告，以及 ai-service、backend、frontend 相关实现和测试。以当前工作区代码为基线，不重置、不清理、不覆盖已有修改。
+2. 先运行 P0 基线检查：Python 测试、Go 测试、前端构建和离线评测；记录已有失败。P1 实现不得回退 P0 的四动作、错误结构、调用预算、mock/真实来源区分、版本指纹和失败不伪装 completed 等约束。
+3. 本轮只完成 taxonomy 建议闭环、真实图片追问、单道相似题候选、主观题辅助批改。不要引入知识图谱、向量库、联网搜索、PDF 主线、独立 Agent 平台、更多微服务或无限自主循环。
+4. 所有生成结果都是受版本约束的 AI 建议。Python 不查询或写入业务数据库；Go 校验用户、数据归属、题目/作答版本、幂等性和最终持久化。任何过期结果都不得覆盖新题面、新作答或人工修改。
+5. 开始编码前先在 backend/API.md 和 ai-service/README.md 写清请求、响应、状态、错误码、幂等键、版本字段和 Go/Python 字段映射，再按最终契约实现；不要同时维护两套重复逻辑。
+
+二、先补齐 taxonomy 自动建议闭环
+1. 修复标准解析链路没有传 categoryCandidates/tagCandidates 的问题。Go 在领取 analyze Job 时查询当前用户可用的顶层分类和合法标签，把候选名称及必要 ID 映射加入 AnalysisRequest.context；Python 只能从候选中选择，不能凭空返回新名称。
+2. 标准解析成功时自动生成 taxonomySuggestion；也允许通过 suggest_taxonomy 显式重新生成建议。两条路径必须复用同一提示词、Pydantic 模型和领域校验，不得出现互相不一致的规则。
+3. categoryName 只能为空或命中一个现有顶层分类；tagNames 只能命中现有标签，去重并限制数量。没有候选、没有匹配、题面信息不足时返回空建议和 reason，不把空建议伪装为成功分类。
+4. mock 模式提供可预测、候选受限的契约结果并明确标记 source=mock；真实模式配置缺失或调用失败返回标准错误，不静默回退 mock。不得把 mock 的分类准确率当作真实模型效果。
+5. Go 保存分析中的建议及其 sourceQuestionFingerprint、候选快照或候选版本、生成来源和时间。应用前重新加载题目及 taxonomy；候选已删除、题目已变更或建议过期时拒绝应用并返回明确状态。
+6. 保留“建议与实际分类标签分离”。前端在解析卡片显示建议、来源、空结果原因、待确认/已过期/应用失败状态，并提供“生成/重新生成建议”“确认应用”“忽略”操作。只有用户确认后，Go 才在事务中应用现有 category/tag；不得自动创建分类标签。
+7. 确认应用必须幂等：同一建议重复点击不得重复写关系或报无法理解的冲突；成功后刷新题目详情和筛选数据。人工修改后的分类标签优先，旧建议不得静默覆盖。
+
+三、P1-1：真实图片追问
+1. 复用现有聊天附件保存能力，但修复当前只把附件路径/文件名拼成文字的问题。Go 必须从服务端对象存储读取已校验的实际图片字节，或生成有时效且仅内部可访问的 URL；Python 必须收到真实图片内容，不能把本地路径文字当视觉输入。
+2. 前端仍只调用 Go 的题目聊天接口。Go 校验题目和附件归属、MIME、扩展名、大小、数量和空文件；默认最多 4 张，只接受支持的图片类型，拒绝路径穿越、外部任意 URL 和客户端伪造的服务端路径。
+3. 将 /internal/v1/chat/question 扩展为兼容旧 JSON 文本请求和 multipart payload/files 图片请求，或采用一个清晰的等价契约。旧文本追问不能被破坏；带图请求在 QuestionContext 中保留题目、作答、解析和受限历史。
+4. 扩展现有视觉 provider，使一次请求能接收有界的多张图片，并继续遵守超时、取消、并发、总调用预算、标准错误和安全日志要求。日志只记录附件数量、类型和字节数，不记录图片 base64、题面全文或密钥。
+5. 图片缺失、损坏、过大、provider 不支持视觉、图片信息不足时分别返回可区分的 4xx、failed、needs_input 或 needs_review。真实模型失败时保留用户消息和附件元数据，不保存“抱歉”等伪成功 assistant 消息；重试不得重复写用户消息或附件记录。
+6. 中栏展示上传中、视觉分析中、待补图、待复核和失败重试。成功回答必须绑定当前题；附件属于输入数据，图片中的“忽略系统规则”等文字不得改变系统指令。
+
+四、P1-2：生成一题相似题候选
+1. 在显式动作注册表增加 generate_similar_question，不让模型猜测按钮意图。每次只生成 1 道结构化候选题，输入包括当前 QuestionContext、目标难度、允许变化的知识点/题型和源题指纹。
+2. 结果至少包含 proposalId、sourceQuestionId、sourceFingerprint、stem、questionType、options、answer、analysis、knowledgePoints、variationStrategy、warnings、qualityStatus。八类题型沿用现有枚举；选择题答案必须引用存在选项，无选项题不得生成 optionAnalysis。
+3. 领域校验必须检查题干非空、选项键唯一、答案/解析一致、题型契约、与原题不能只是数字或选项顺序的机械复制。无法验证答案、条件不足或与原题矛盾时返回 needs_review，不允许直接创建 Question。
+4. Go 保存待确认 proposal，建议新增最小的通用 AI proposal 模型，至少包含用户、源题、动作、状态 pending/applied/rejected/expired、内容 JSON、源指纹、幂等键、过期时间和 createdQuestionId；不要让 Python 写库。
+5. 对外提供生成、查看、确认创建、拒绝接口。只有用户点击“确认创建”后，Go 才重新校验源题版本并事务化创建新的 Question、Options 和必要关联；新题默认标记 sourceType=ai_generated 或等价来源，不继承旧题作答、学习状态和聊天记录。
+6. 确认创建必须幂等：同一 proposal 重复确认只能得到同一 createdQuestionId。过期、已拒绝、已应用或源题已变化均返回明确状态。不得自动加入正确/错误统计。
+7. 中栏恢复“生成相似题”入口，显示生成中、候选预览、待复核、确认保存、放弃和失败重试；候选未确认前不能出现在正式题库和练习推荐中。
+
+五、P1-3：主观题辅助批改
+1. 在显式动作注册表增加 grade_subjective_answer，只允许 subjective、short_answer、essay、calculation。客观题继续走现有规则判分，不绕到 LLM。
+2. 输入必须包含用户作答、题目版本/指纹，以及可追溯的评分依据：人工 rubric、标准答案、参考解析或明确评分点至少一种。没有评分依据、未作答、题面残缺时返回 needs_input；不得凭空编造满分标准。
+3. 类型化结果至少包含 suggestedScore、maxScore、criteriaResults、strengths、missingPoints、feedback、evidence、uncertainties、confidence、requiresHumanReview。每个评分项给出依据和得分范围；suggestedScore 必须在 0..maxScore，分项和总分一致。
+4. AI 结果只是 grading suggestion。Go 校验练习会话/题目/作答归属和版本并保存建议；不得由 Python 直接更新 PracticeSessionQuestion、QuestionLearningState、掌握度、正确率、错题次数或复习日期。
+5. 对外提供生成评分建议、查看、确认采用/人工修订接口。最终确认由 Go 执行并记录确认来源 ai_confirmed/manual、确认人和时间；AI 低置信度、有 uncertainties 或 requiresHumanReview=true 时必须要求人工确认。
+6. 确认采用和人工修订必须幂等，且只作用于同一份作答版本。用户修改答案后旧评分建议自动过期；重试失败不能重复更新会话得分或学习状态。
+7. 在练习结果或单题工作台的合适位置展示“AI 建议分数”而不是“最终得分”，显示评分依据、缺失要点、不确定项和确认控件；保留桌面三栏，不增加独立批改产品页面。
+
+六、共享接口、状态与数据约束
+1. 扩展 AgentAction 枚举和判别联合，加入 generate_similar_question、grade_subjective_answer；每个 action 必须对应独立 params/result 模型，禁止用任意 dict 规避契约。
+2. 保持响应统一为 traceId、questionId、action、status、result、warnings、error、meta；status 只用 completed、needs_input、needs_review、failed。非法输入 4xx，上游/超时 5xx，needs_input/needs_review 使用 200。
+3. 所有 P1 动作继续共享默认最多 3 次模型调用、最多 1 次结构修复和可配置总 deadline；图片数量/字节、上下文字符、历史条数和模型输出长度均有硬上限。
+4. Go 的数据库 Job 状态与 AI 业务状态分离；长动作复用现有 Job/worker 或清晰扩展 job_type，确保任务最终收敛，不让前端无限轮询。重复请求使用幂等键，不重复创建 proposal、消息、题目或评分。
+5. 默认不记录题面全文、用户完整作答、图片内容、模型原始长响应和密钥。日志记录 traceId、questionId、proposalId、action、provider/model、promptVersion、durationMs、attempts、状态、附件统计和可用 usage。
+
+七、测试、评测和验收
+1. 使用可注入 fake/mock provider 建立离线测试，不要求 API Key。taxonomy 覆盖：候选正常命中、无候选、无匹配、越界名称被拒绝、候选删除、题目过期、人工分类优先、重复确认幂等。
+2. 图片追问覆盖：真实图片字节到达 Python、多图顺序、文本兼容、空图、伪 MIME、超限、对象不存在、视觉 provider 不可用、图片指令注入、超时/取消、失败重试不重复消息。至少有一个 Go→Python multipart 契约测试，不能只断言路由存在。
+3. 相似题覆盖八类题型、答案/选项不一致、重复选项键、无选项题、源题机械复制、needs_review、过期 proposal、拒绝、重复确认只创建一个 Question。
+4. 主观题批改覆盖四类主观题、无作答、无 rubric、分数越界、分项总分不一致、证据不足、答案更新使建议过期、人工修订、重复确认不重复更新学习状态。
+5. 扩展离线评测集，至少新增 24 个有预期要点和禁出内容的 P1 案例：taxonomy 不少于 6、图片追问不少于 6、相似题不少于 6、主观题批改不少于 6。人工规则或授权数据优先，模型不得作为唯一裁判。
+6. 报告分别统计 taxonomy 候选命中/越界、图片信息利用与失败状态、相似题 schema/答案一致性/非机械复制、批改依据覆盖/分数合法性/不确定项，以及真实模式耗时和可得 token。mock 与真实结果分开，不虚构提升比例。
+7. 执行 Python 全量测试、Go 全量测试、前端测试或生产构建、Go→Python 契约测试及离线评测。若本地已有获授权 provider，按有限预算做真实图片追问、相似题和批改各至少 2 例；不得读取或打印密钥。没有 provider 或数据库时完成所有离线工作，并把真实端到端列为明确未验证项。
+8. 同步 ai-service/README.md、.env.example、backend/API.md、project.md、webdesign.md 和必要迁移说明；把变更、测试结果、真实/mock 范围和后续限制从 talk.md 第一行置顶记录，旧内容整体保留。
+
+八、完成条件与最终交付
+1. taxonomy 必须做到“标准解析自动产生受候选约束的建议 → 中栏可见 → 用户确认后 Go 幂等应用”；不能再出现 Go 未传候选导致建议始终为空的链路缺口。
+2. 图片追问必须证明 Python 收到并使用实际图片内容；只传路径、文件名、附件文字或 mock 回答不算完成。
+3. 相似题必须先形成可持久化、可预览、可拒绝、可幂等确认的候选；模型直接创建正式 Question 不算完成。
+4. 主观题批改必须有评分依据、结构化证据和人工确认边界；AI 直接改最终成绩或学习状态不算完成。
+5. 最终报告提供能力清单、关键文件、迁移/接口示例、测试命令和结果、评测报告、真实/mock 验证范围、已知限制与外部阻塞。只有实现和必要验证均完成后才能宣布本 Goal 完成。
+```
+
+简短启动入口：
+
+> 请将 `ai-service/AGENT_GOAL.md` 第 5 节完整指令设为本次 goal，完成 taxonomy 建议闭环与 P1 图片追问、相似题生成、主观题辅助批改；先检查并保留当前工作区修改，按文档实现、测试、评测和验收。
