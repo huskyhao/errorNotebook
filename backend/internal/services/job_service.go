@@ -1,8 +1,10 @@
 package services
 
 import (
+	"context"
 	"errors"
 
+	"erro-notebook/backend/internal/auth"
 	"erro-notebook/backend/internal/models"
 	"erro-notebook/backend/internal/repository"
 )
@@ -18,19 +20,29 @@ func NewJobService(jobRepo *repository.JobRepository) *JobService {
 	return &JobService{jobRepo: jobRepo}
 }
 
-func (s *JobService) GetByJobID(jobID string) (*models.Job, error) {
-	job, err := s.jobRepo.GetByJobID(jobID)
+func (s *JobService) GetByJobID(ctx context.Context, jobID string) (*models.Job, error) {
+	userID, ok := auth.UserIDFromContext(ctx)
+	var job *models.Job
+	var err error
+	if ok {
+		job, err = s.jobRepo.GetByJobIDForUser(jobID, userID)
+	} else {
+		job, err = s.jobRepo.GetByJobID(jobID)
+	}
 	if err != nil {
 		return nil, err
 	}
 	if job == nil {
 		return nil, ErrJobNotFound
 	}
+	if job.Status == "pending" {
+		job.Status = "queued"
+	}
 	return job, nil
 }
 
-func (s *JobService) RetryJob(jobID string) (*models.Job, error) {
-	job, err := s.GetByJobID(jobID)
+func (s *JobService) RetryJob(ctx context.Context, jobID string) (*models.Job, error) {
+	job, err := s.GetByJobID(ctx, jobID)
 	if err != nil {
 		return nil, err
 	}

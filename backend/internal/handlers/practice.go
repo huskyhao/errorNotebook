@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
+	"erro-notebook/backend/internal/auth"
 	"erro-notebook/backend/internal/services"
 	"erro-notebook/backend/pkg/response"
 	"github.com/gin-gonic/gin"
@@ -13,6 +15,22 @@ import (
 
 type PracticeHandler struct {
 	practiceService *services.PracticeService
+}
+
+func (h *PracticeHandler) accessMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		part := strings.TrimPrefix(c.Request.URL.Path, "/api/v1/practice-sessions/")
+		id, err := strconv.ParseInt(strings.Split(part, "/")[0], 10, 64)
+		if err == nil && id > 0 {
+			userID, ok := auth.UserIDFromContext(c.Request.Context())
+			if !ok || h.practiceService.AuthorizeSession(userID, id) != nil {
+				response.Error(c, http.StatusNotFound, "SESSION_NOT_FOUND", "session not found")
+				c.Abort()
+				return
+			}
+		}
+		c.Next()
+	}
 }
 
 type gradeSuggestionRequest struct {
@@ -89,7 +107,7 @@ func (h *PracticeHandler) GetGradeSuggestion(c *gin.Context) {
 		response.Error(c, http.StatusNotFound, "PRACTICE_QUESTION_NOT_FOUND", "question not found in session")
 		return
 	}
-	proposal, err := h.practiceService.GetGradeSuggestion(c.Param("proposalId"), item.QuestionID)
+	proposal, err := h.practiceService.GetGradeSuggestion(c.Request.Context(), c.Param("proposalId"), item.QuestionID)
 	if err != nil || proposal == nil {
 		response.Error(c, http.StatusNotFound, "PROPOSAL_NOT_FOUND", "grading suggestion not found")
 		return
@@ -102,7 +120,8 @@ func (h *PracticeHandler) GetGradeSuggestion(c *gin.Context) {
 }
 
 func (h *PracticeHandler) GetPracticeRecommendations(c *gin.Context) {
-	groups, err := h.practiceService.GetPracticeRecommendations(time.Now())
+	userID, _ := auth.UserIDFromContext(c.Request.Context())
+	groups, err := h.practiceService.GetPracticeRecommendationsForUser(userID, time.Now())
 	if err != nil {
 		response.Error(c, http.StatusInternalServerError, "RECOMMENDATIONS_FAILED", err.Error())
 		return
@@ -126,7 +145,8 @@ func (h *PracticeHandler) CreateSession(c *gin.Context) {
 		return
 	}
 
-	detail, err := h.practiceService.CreateSession(1, services.CreateSessionInput{
+	userID, _ := auth.UserIDFromContext(c.Request.Context())
+	detail, err := h.practiceService.CreateSession(userID, services.CreateSessionInput{
 		Name:        req.Name,
 		QuestionIDs: req.QuestionIDs,
 	})
@@ -139,7 +159,8 @@ func (h *PracticeHandler) CreateSession(c *gin.Context) {
 }
 
 func (h *PracticeHandler) ListSessions(c *gin.Context) {
-	sessions, err := h.practiceService.ListSessions(1)
+	userID, _ := auth.UserIDFromContext(c.Request.Context())
+	sessions, err := h.practiceService.ListSessions(userID)
 	if err != nil {
 		response.Error(c, http.StatusInternalServerError, "SESSION_LIST_FAILED", err.Error())
 		return

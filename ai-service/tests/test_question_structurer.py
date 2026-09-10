@@ -65,6 +65,45 @@ class QuestionStructurerTest(unittest.TestCase):
         self.assertEqual(len(result.structured_question.options), 4)
         self.assertEqual(result.structured_question.options[0].key, "A")
 
+    def test_exam_ui_prefix_is_removed_from_stem(self) -> None:
+        ocr = OCRBackendResult(
+            blocks=[
+                OCRTextBlock(
+                    text="倒计时00:17:35 24/31单选题（分值3.0分，难度：易） 下列哪一种图不一定是树（）。",
+                    confidence=0.96,
+                ),
+                OCRTextBlock(text="A.完全图", confidence=0.95),
+                OCRTextBlock(text="B.最小生成树", confidence=0.95),
+                OCRTextBlock(text="C.二叉树", confidence=0.95),
+                OCRTextBlock(text="D.线索二叉树", confidence=0.95),
+            ],
+            engine="mock",
+        )
+
+        result = QuestionStructurer().structure(
+            source_type="image", filename="graph.png", ocr_result=ocr
+        )
+
+        self.assertEqual(result.structured_question.stem, "下列哪一种图不一定是树（）。")
+        self.assertIn("ocr_exam_ui_noise_removed", result.warnings)
+
+    def test_exam_ui_lines_are_dropped_before_stem(self) -> None:
+        ocr = OCRBackendResult(
+            blocks=[
+                OCRTextBlock(text="倒计时 00:17:35", confidence=0.96),
+                OCRTextBlock(text="24/31", confidence=0.96),
+                OCRTextBlock(text="单选题（分值3.0分，难度：易）", confidence=0.96),
+                OCRTextBlock(text="下列哪一种图不一定是树（）。", confidence=0.96),
+            ],
+            engine="mock",
+        )
+
+        result = QuestionStructurer().structure(
+            source_type="image", filename="graph.png", ocr_result=ocr
+        )
+
+        self.assertEqual(result.structured_question.stem, "下列哪一种图不一定是树（）。")
+
 
 class _MockRefineClient:
     def __init__(self, content: str) -> None:

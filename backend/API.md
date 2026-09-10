@@ -23,6 +23,14 @@
 }
 ```
 
+## 0. 匿名会话与数据归属
+
+Go 在首次访问 `/api/v1/*`（健康检查除外）时创建匿名 `User` 与 `UserSession`，通过签名、HttpOnly、SameSite=Lax 的 `erro_session` Cookie 识别用户。前端必须使用 `credentials: include`；请求体、查询参数或路径中传来的 `userId` 不参与鉴权。响应会在首次建会话时附带 `X-Erro-Anonymous-Notice: data-is-bound-to-this-browser`，`GET /api/v1/session` 返回同样的中文提示：未注册数据仅绑定当前浏览器，清除 Cookie 或更换设备后无法恢复。
+
+`Question` 是归属根。QuestionAsset、Analysis、Job、ChatMessage、BatchImport、BatchImportItem、PracticeSession、PracticeSessionQuestion、QuestionLearningState、AIProposal 均带有 `user_id` 或通过归属根校验。详情、列表、修改、删除、聊天、解析、proposal、练习和推荐接口均按当前会话过滤；跨用户资源统一按 404 处理，不泄露资源是否存在。对象 key 使用 `users/{userId}/questions/{questionId}/...`，读取前仍需通过题目归属校验。
+
+Category/Tag 采用“系统词表 + 用户私有词表”策略：匿名用户可读取系统项和自己的自定义项，也可新增、修改、删除自己的分类/标签；系统项只读，避免一个用户影响其他用户。数据库迁移会确保 `数据结构`、`计算机组成原理`、`操作系统`、`计算机网络` 四个 408 顶层系统分类存在。AI 的 category 只能从这些大类或当前用户自建的顶层学科中选择；AI 新提出的知识点 tag 由 Go 创建为当前用户私有标签。建议默认应用到尚未手动设置 taxonomy 的题目，用户仍可在右侧手动调整。未来账号升级只预留会话迁移接口，本轮不实现注册、密码或 OAuth。
+
 ## 1. 服务边界
 
 ### Go `backend`
@@ -69,14 +77,14 @@ Python 服务只返回结构化 JSON，不直接写业务库。
 | `rawText` | string | 手动导入必填 | 原始题目文本 |
 | `sourceType` | string | 否 | `image` / `manual`，默认 `image` |
 
-响应：
+响应（上传接口立即返回占位题目，任务在后台执行）：
 
 ```json
 {
   "data": {
     "jobId": "ocr_1748260000000000000",
     "questionId": 1,
-    "status": "completed"
+    "status": "queued"
   }
 }
 ```
@@ -85,8 +93,11 @@ Python 服务只返回结构化 JSON，不直接写业务库。
 
 * 图片导入时，Go 先把原图写入对象存储，再创建 `question + job`，不在上传请求中调用 OCR。
 * OCR 成功后回填题干、题型、选项、建议答案、原始 OCR 文本、图片路径等字段。
+* 结构化阶段会剥离题干开头的倒计时、题目进度、题型、分值、难度和“第 N 题”等考试界面信息，并保留原始 OCR 证据；发生清洗时写入 `ocr_exam_ui_noise_removed` warning。
 * 手动导入会直接创建题目并将 OCR 状态置为 `completed`。
-* 单题导入成功后会触发解析任务，OCR 和解析均由数据库 worker 在后台调用 Python 服务。
+* 图片 OCR 成功后会自动创建解析任务，OCR 和解析均由数据库 worker 在后台调用 Python 服务；手动创建题目如需解析，由前端调用 `POST /api/v1/questions/{id}/analyze`。
+
+Go 调 Python 时保证 `question.warnings` 即使为空也序列化为 `[]`，不得发送 `null`；否则 Python 的结构化契约会拒绝该分析请求。
 
 ### 2.2 批量导入
 
@@ -111,7 +122,7 @@ Python 服务只返回结构化 JSON，不直接写业务库。
         "fileIndex": 0,
         "fileName": "q1.png",
         "questionId": 10,
-        "status": "pending"
+        "status": "queued"
       }
     ]
   }
@@ -148,7 +159,7 @@ Python 服务只返回结构化 JSON，不直接写业务库。
 }
 ```
 
-批量明细状态：`pending` / `processing` / `completed` / `failed` / `needs_review`。
+批量明细状态：`queued` / `processing` / `completed` / `failed` / `needs_review`。`processingStage` 会区分 `ocr`、`analysis_queued`、`analysis` 和终态。
 
 ### 2.4 题目列表
 
@@ -246,7 +257,7 @@ Python 服务只返回结构化 JSON，不直接写业务库。
 
 响应：更新后的题目详情。
 
-分类字段约束：`categoryId` 是题目的唯一学科分类，传正整数只能指向已存在的顶层分类，传 `null` 表示未分类；Go 会拒绝不存在或带父级的分类。
+分类字段约束：`categoryId` 是题目的唯一学科分类，传正整数只能指向当前用户可见的系统/自有顶层分类，传 `null` 表示未分类；Go 会拒绝不存在、他人私有或带父级的分类。
 
 ### 3.2 生成解析
 
@@ -471,7 +482,7 @@ Python 服务只返回结构化 JSON，不直接写业务库。
 
 成功响应：`204 No Content`
 
-### 6.6 AI 分类标签建议
+### 6.6 AI 自动分类与标签
 
 AI 解析结果可以包含可选的 `content.taxonomySuggestion`：
 
@@ -483,7 +494,7 @@ AI 解析结果可以包含可选的 `content.taxonomySuggestion`：
 }
 ```
 
-该字段只是 Python AI 的建议，不代表已生效。Go 负责保存解析记录、校验候选分类/标签，后续由用户确认后调用题目分类和标签接口完成最终变更；前端不直接访问 Python。
+Python 只负责生成该字段，不直接写入业务库。`categoryName` 只能命中 Go 给出的顶层学科候选；`tagNames` 最多 3 个，优先复用已有标签，也可提出新的细粒度知识点。Go 校验后把新标签创建在当前匿名用户的私有词表中，再保存解析记录，并在分析完成时自动应用到尚未人工设置 taxonomy 的题目；正常前端流程不要求用户确认。没有匹配的大类学科时保持未分类，用户可在题目详情手动修改。
 
 ## 7. 做题会话
 
@@ -513,7 +524,7 @@ AI 解析结果可以包含可选的 `content.taxonomySuggestion`：
 
 `GET /api/v1/practice-sessions`
 
-响应：当前固定业务用户的会话列表。
+响应：当前匿名会话用户的会话列表；服务端从 `erro_session` Cookie 解析归属。
 
 ### 7.3 做题会话详情
 
@@ -633,7 +644,9 @@ AI 解析结果可以包含可选的 `content.taxonomySuggestion`：
 * `createdAt`
 * `updatedAt`
 
-任务状态：`pending` / `processing` / `completed` / `failed` / `needs_review`。
+任务状态：`queued` / `processing` / `completed` / `needs_review` / `failed`（旧数据库中的 `pending` 仍可被 worker 兼容接管）。题目自身分别返回 `ocrStatus` 与 `analysisStatus`，分析尚未生成时是 `queued`/`processing`，不是“无解析”。
+
+图片分析优先把 Go 已校验的原图通过 multipart 交给 Python 视觉 provider；视觉 provider 超时或暂时不可达时，Python 若仍有可用文本 provider，会基于 OCR 结构化结果继续解析，并在 AI 响应 warning 中返回 `multimodal_fallback_to_ocr`。文本 provider 也不可用时返回明确的 `PROVIDER_TIMEOUT`/`PROVIDER_UNAVAILABLE`，Go 按 Job 重试策略处理，不回退到 mock 成功结果。
 
 重试失败任务：
 
@@ -678,11 +691,11 @@ Go 根据题目、作答、最新解析、必要对话和现有分类/标签候�
 
 `diagnose_mistake` 的成功结果包含 `mistakeReason`、`reasonType`、`evidence`、`weaknessTags`、`reviewAdvice`、`uncertainties`。Go 仅在证据充分且题目内容指纹未变化时写入学习状态，不修改掌握度、正确率、错题次数、连续答对和复习日期。AI 失败时保留旧值。
 
-### 10.2 确认 taxonomy 建议
+### 10.2 应用 taxonomy 建议
 
 `POST /api/v1/questions/{id}/taxonomy-suggestion/apply`
 
-该操作读取最新解析中的建议，重新校验题目、现有顶层分类和标签归属，并在事务中替换分类/标签关联。不会自动创建分类或标签；无匹配、候选已删除和重复点击返回明确冲突错误。
+图片解析完成后，若题目尚未手动设置 taxonomy，Go 会自动读取并校验建议，在事务中应用当前用户可见的顶层分类和标签；用户仍可通过题目更新/标签接口手动调整。该接口保留用于历史数据修复或显式 API 调用，正常前端流程不会要求点击“应用建议”，重复调用幂等；无匹配、候选已删除和越权访问返回明确错误。
 
 Python 侧动作契约、错误结构、multipart 解析示例和离线评测见 `ai-service/README.md` 与 `ai-service/evals/`。当前未配置真实 provider 时，测试结果只代表 mock/契约链路。
 
@@ -708,7 +721,7 @@ Python 侧动作契约、错误结构、multipart 解析示例和离线评测见
 
 ## 11. 当前限制
 
-* 目前尚未接入真实鉴权，业务用户固定为 `1`。
+* 当前为匿名会话鉴权，尚未实现邮箱、密码、OAuth、跨设备恢复和正式账号升级。
 * PDF 导入、试卷拆题和批次校对接口已从 MVP 移除；当前稳定范围是图片导入和手动文本导入。
 * 图片先写入持久化对象存储，再由数据库 worker 异步处理 OCR 和解析；默认适配器为本地对象存储，后续可替换为 S3/MinIO。
 * Worker 使用数据库租约、自动退避重试和过期任务接管；暂未引入独立消息队列。

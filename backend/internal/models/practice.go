@@ -20,6 +20,7 @@ func (PracticeSession) TableName() string {
 
 type PracticeSessionQuestion struct {
 	ID             int64     `gorm:"primaryKey" json:"id"`
+	UserID         int64     `gorm:"column:user_id;not null;default:1;index" json:"-"`
 	SessionID      int64     `gorm:"not null;index" json:"sessionId"`
 	QuestionID     int64     `gorm:"not null;index" json:"questionId"`
 	OrderIndex     int       `gorm:"not null" json:"orderIndex"`

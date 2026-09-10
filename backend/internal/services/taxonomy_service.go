@@ -26,11 +26,14 @@ func NewTaxonomyService(
 	}
 }
 
-func (s *TaxonomyService) ListCategories() ([]models.Category, error) {
+func (s *TaxonomyService) ListCategories(userID int64) ([]models.Category, error) {
+	if userID > 0 {
+		return s.categoryRepo.ListForUser(userID)
+	}
 	return s.categoryRepo.List()
 }
 
-func (s *TaxonomyService) CreateCategory(name string, parentID *int64) (*models.Category, error) {
+func (s *TaxonomyService) CreateCategory(userID int64, name string, parentID *int64) (*models.Category, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return nil, ErrEmptyTaxonomyName
@@ -39,7 +42,8 @@ func (s *TaxonomyService) CreateCategory(name string, parentID *int64) (*models.
 		return nil, ErrNestedCategoryNotSupported
 	}
 	category := &models.Category{
-		Name: name,
+		UserID: userID,
+		Name:   name,
 	}
 	if err := s.categoryRepo.Create(category); err != nil {
 		return nil, err
@@ -47,28 +51,40 @@ func (s *TaxonomyService) CreateCategory(name string, parentID *int64) (*models.
 	return category, nil
 }
 
-func (s *TaxonomyService) ListTags() ([]models.Tag, error) {
+func (s *TaxonomyService) ListTags(userID int64) ([]models.Tag, error) {
+	if userID > 0 {
+		return s.tagRepo.ListForUser(userID)
+	}
 	return s.tagRepo.List()
 }
 
-func (s *TaxonomyService) CreateTag(name string) (*models.Tag, error) {
+func (s *TaxonomyService) CreateTag(userID int64, name string) (*models.Tag, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return nil, ErrEmptyTaxonomyName
 	}
-	tag := &models.Tag{Name: name}
+	tag := &models.Tag{UserID: userID, Name: name}
 	if err := s.tagRepo.Create(tag); err != nil {
 		return nil, err
 	}
 	return tag, nil
 }
 
-func (s *TaxonomyService) DeleteTag(id int64) error {
+func (s *TaxonomyService) DeleteTag(userID, id int64) error {
+	if userID > 0 {
+		return s.tagRepo.DeleteForUser(id, userID)
+	}
 	return s.tagRepo.Delete(id)
 }
 
-func (s *TaxonomyService) UpdateCategory(id int64, name string, parentID *int64) (*models.Category, error) {
-	category, err := s.categoryRepo.GetByID(id)
+func (s *TaxonomyService) UpdateCategory(userID, id int64, name string, parentID *int64) (*models.Category, error) {
+	var category *models.Category
+	var err error
+	if userID > 0 {
+		category, err = s.categoryRepo.GetByIDForUser(id, userID)
+	} else {
+		category, err = s.categoryRepo.GetByID(id)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -87,13 +103,19 @@ func (s *TaxonomyService) UpdateCategory(id int64, name string, parentID *int64)
 	// ParentID in the model for backwards compatibility with old rows, but do
 	// not create or deepen a hierarchy in the current MVP.
 	category.ParentID = nil
+	if category.UserID != userID {
+		return nil, repository.ErrTaxonomyNotOwned
+	}
 	if err := s.categoryRepo.Update(category); err != nil {
 		return nil, err
 	}
 	return category, nil
 }
 
-func (s *TaxonomyService) DeleteCategory(id int64) error {
+func (s *TaxonomyService) DeleteCategory(userID, id int64) error {
+	if userID > 0 {
+		return s.categoryRepo.DeleteForUser(id, userID)
+	}
 	return s.categoryRepo.Delete(id)
 }
 
@@ -104,8 +126,8 @@ type CategoryTreeNode struct {
 	QuestionCount int64  `json:"questionCount"`
 }
 
-func (s *TaxonomyService) GetCategoryTree(counts map[int64]int64) ([]CategoryTreeNode, error) {
-	categories, err := s.categoryRepo.List()
+func (s *TaxonomyService) GetCategoryTree(userID int64, counts map[int64]int64) ([]CategoryTreeNode, error) {
+	categories, err := s.ListCategories(userID)
 	if err != nil {
 		return nil, err
 	}

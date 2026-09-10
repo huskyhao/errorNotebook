@@ -4,6 +4,7 @@ import "time"
 
 type Analysis struct {
 	ID                            int64     `gorm:"primaryKey" json:"id"`
+	UserID                        int64     `gorm:"column:user_id;not null;default:1;index" json:"-"`
 	QuestionID                    int64     `gorm:"not null;index" json:"questionId"`
 	JobID                         *string   `gorm:"column:job_id;type:varchar(64);uniqueIndex" json:"-"`
 	Provider                      string    `gorm:"type:varchar(128);not null" json:"provider"`
@@ -21,6 +22,7 @@ func (Analysis) TableName() string {
 
 type Job struct {
 	ID              int64      `gorm:"primaryKey" json:"id"`
+	UserID          int64      `gorm:"column:user_id;not null;default:1;index" json:"-"`
 	JobID           string     `gorm:"column:job_id;type:varchar(64);uniqueIndex;not null" json:"jobId"`
 	QuestionID      int64      `gorm:"not null;index" json:"questionId"`
 	JobType         string     `gorm:"column:job_type;type:varchar(64);not null;index" json:"type"`
@@ -44,6 +46,7 @@ func (Job) TableName() string {
 
 type ChatMessage struct {
 	ID             int64     `gorm:"primaryKey" json:"id"`
+	UserID         int64     `gorm:"column:user_id;not null;default:1;index" json:"-"`
 	QuestionID     int64     `gorm:"not null;index" json:"questionId"`
 	IdempotencyKey *string   `gorm:"column:idempotency_key;type:varchar(128);uniqueIndex" json:"-"`
 	Role           string    `gorm:"type:varchar(32);not null" json:"role"`

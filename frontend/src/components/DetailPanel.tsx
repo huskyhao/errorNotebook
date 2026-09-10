@@ -390,7 +390,10 @@ export default function DetailPanel({
           <>
           <section className="analysis-panel">
             <h3 className="analysis-panel-title">解析</h3>
-            {analysisSections.map((section) => (
+            {!analysis && ['queued', 'processing', 'pending'].includes(question?.analysisStatus ?? '') ? (
+              <div className="analysis-placeholder" role="status">解析中，AI 正在整理题干和解题步骤…</div>
+            ) : null}
+            {analysis ? analysisSections.map((section) => (
               <article key={section.key} className="accordion">
                 <header
                   className="accordion-header"
@@ -412,7 +415,8 @@ export default function DetailPanel({
                 </header>
                 {section.expanded ? <div className="accordion-panel">{section.body}</div> : null}
               </article>
-            ))}
+            )) : null}
+            {!analysis && !['queued', 'processing', 'pending'].includes(question?.analysisStatus ?? '') ? <div className="analysis-placeholder">暂无解析</div> : null}
           </section>
           </>
           )}

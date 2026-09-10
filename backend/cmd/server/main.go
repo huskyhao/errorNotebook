@@ -5,6 +5,7 @@ import (
 	"log"
 	"time"
 
+	"erro-notebook/backend/internal/auth"
 	"erro-notebook/backend/internal/config"
 	"erro-notebook/backend/internal/database"
 	"erro-notebook/backend/internal/handlers"
@@ -27,6 +28,7 @@ func main() {
 	if err := database.AutoMigrate(db); err != nil {
 		log.Fatalf("auto migrate failed: %v", err)
 	}
+	sessionManager := auth.NewManager(auth.NewGormStore(db), cfg.SessionSecret, 30*24*time.Hour, cfg.SessionCookieSecure)
 	sqlDB, err := db.DB()
 	if err != nil {
 		log.Fatalf("get sql db failed: %v", err)
@@ -79,7 +81,7 @@ func main() {
 	practiceRepo := repository.NewPracticeSessionRepository(db)
 	practiceService := services.NewPracticeService(practiceRepo, questionRepo, learningRepo, aiClient, proposalRepo)
 	practiceHandler := handlers.NewPracticeHandler(practiceService)
-	router := handlers.NewRouter(questionHandler, taxonomyHandler, questionAIHandler, practiceHandler)
+	router := handlers.NewRouter(questionHandler, taxonomyHandler, questionAIHandler, practiceHandler, sessionManager)
 	questionService.StartTaskWorkers(
 		context.Background(),
 		cfg.TaskWorkerCount,

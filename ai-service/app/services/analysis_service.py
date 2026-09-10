@@ -100,11 +100,39 @@ class AnalysisService:
             )
         )
         started_at = time.perf_counter()
+        fallback_warnings: list[str] = []
 
         if use_multimodal:
-            analysis, completion_tokens = await self._analyze_with_multimodal(
-                payload, image_bytes, media_type
-            )
+            try:
+                analysis, completion_tokens = await asyncio.wait_for(
+                    self._analyze_with_multimodal(payload, image_bytes, media_type),
+                    timeout=settings.ai_action_timeout_seconds,
+                )
+            except (OpenAICompatibleError, asyncio.TimeoutError, TimeoutError) as exc:
+                # A configured vision endpoint can be temporarily unavailable
+                # while the text endpoint is healthy. OCR already produced a
+                # structured question, so keep the import usable by falling
+                # back to text analysis instead of returning mock content or
+                # losing the question altogether.
+                if self._client is None:
+                    if isinstance(exc, OpenAICompatibleError):
+                        raise
+                    raise OpenAICompatibleError(
+                        "PROVIDER_TIMEOUT", "multimodal provider request timed out", True, 504
+                    ) from exc
+                provider_error = exc if isinstance(exc, OpenAICompatibleError) else OpenAICompatibleError(
+                    "PROVIDER_TIMEOUT", "multimodal provider request timed out", True, 504
+                )
+                logger.warning(
+                    format_log(
+                        "analysis.multimodal_fallback",
+                        trace_id=payload.traceId,
+                        question_id=payload.questionId,
+                        code=provider_error.code,
+                    )
+                )
+                fallback_warnings.append("multimodal_fallback_to_ocr")
+                analysis, completion_tokens = await self._analyze_with_openai(payload)
         elif self._client:
             analysis, completion_tokens = await self._analyze_with_openai(payload)
         else:
@@ -114,6 +142,7 @@ class AnalysisService:
 
         llm_ms = int((time.perf_counter() - started_at) * 1000)
         analysis, warnings = self._validate_domain(analysis, payload)
+        warnings = list(dict.fromkeys(fallback_warnings + warnings))
         response = AnalysisResponse(
             traceId=payload.traceId,
             questionId=payload.questionId,
@@ -170,18 +199,39 @@ class AnalysisService:
             warnings.append("answer_unconfirmed")
         suggestion = analysis.taxonomySuggestion
         if suggestion is not None:
-            categories = {item.casefold() for item in payload.context.get("categoryCandidates", []) if isinstance(item, str)}
-            tags = {item.casefold() for item in payload.context.get("tagCandidates", []) if isinstance(item, str)}
-            if suggestion.categoryName and suggestion.categoryName.casefold() not in categories:
+            category_by_key = {
+                item.strip().casefold(): item.strip()
+                for item in payload.context.get("categoryCandidates", [])
+                if isinstance(item, str) and item.strip()
+            }
+            if suggestion.categoryName and suggestion.categoryName.strip().casefold() not in category_by_key:
                 suggestion.categoryName = None
                 warnings.append("taxonomy_category_outside_candidates")
-            suggestion.tagNames = list(dict.fromkeys(tag for tag in suggestion.tagNames if tag.casefold() in tags))[:8]
+            elif suggestion.categoryName:
+                suggestion.categoryName = category_by_key[suggestion.categoryName.strip().casefold()]
+            clean_tags: list[str] = []
+            seen_tags: set[str] = set()
+            existing_tag_keys = {
+                item.strip().casefold()
+                for item in payload.context.get("tagCandidates", [])
+                if isinstance(item, str) and item.strip()
+            }
+            for raw_tag in suggestion.tagNames:
+                tag = raw_tag.strip()
+                key = tag.casefold()
+                if (len(tag) < 2 and key not in existing_tag_keys) or len(tag) > 32 or any(char in tag for char in "\r\n\t") or key in seen_tags:
+                    continue
+                seen_tags.add(key)
+                clean_tags.append(tag)
+                if len(clean_tags) == 3:
+                    break
+            suggestion.tagNames = clean_tags
             if suggestion.confidence is not None:
                 suggestion.confidence = min(1, max(0, suggestion.confidence))
             if not suggestion.categoryName and not suggestion.tagNames:
-                analysis.taxonomySuggestionReason = "没有候选 taxonomy 或题面信息不足，未生成可确认建议。"
-            elif suggestion.categoryName is None or len(suggestion.tagNames) < len(payload.context.get("tagCandidates", [])):
-                analysis.taxonomySuggestionReason = analysis.taxonomySuggestionReason or "仅保留命中现有候选的建议，仍需用户确认。"
+                analysis.taxonomySuggestionReason = "没有可确认的大类学科或题面信息不足。"
+            elif suggestion.categoryName is None:
+                analysis.taxonomySuggestionReason = analysis.taxonomySuggestionReason or "未命中可用的大类学科，知识点标签仅供参考。"
         return analysis, list(dict.fromkeys(warnings))
 
     async def _analyze_with_openai(self, payload: AnalysisRequest) -> tuple[AnalysisPayload, int]:
@@ -194,9 +244,9 @@ class AnalysisService:
             "如果题目无法完全确定，也要给出保守但结构合法的 JSON。"
             "如果 question.warnings 或 context.structureWarnings 提示 options_incomplete、missing_options_*、llm_refine_failed，"
             "说明题面结构可能不完整；此时必须参考 question.rawText，不要只依据 options 数组判断题目。"
-            "taxonomySuggestion 只能返回建议：categoryName 必须是稳定的高层学科分类，tagNames 只能是细粒度知识点；"
+            "taxonomySuggestion 只能返回建议：categoryName 必须从 context.categoryCandidates 中选择一个稳定的高层学科分类；"
+            "tagNames 返回 1 到 3 个简短、具体的知识点标签，优先复用 context.tagCandidates，也允许提出新的知识点标签；"
             "不要把 TCP、UDP 等知识点放进 categoryName，也不要声称建议已经生效。"
-            "候选分类和标签在 context.categoryCandidates/tagCandidates 中；只能从候选中选择。"
         )
         user_prompt = json.dumps(
             {
@@ -258,6 +308,8 @@ class AnalysisService:
             "如果题目无法完全确定，也要给出保守但结构合法的 JSON。"
             "如果 question.warnings 或 context.structureWarnings 提示 options_incomplete、missing_options_*、llm_refine_failed，"
             "说明题面结构可能不完整；此时必须结合图片和 question.rawText，不要只依据 options 数组判断题目。"
+            "taxonomySuggestion.categoryName 必须从 context.categoryCandidates 中选择一个大类学科；"
+            "tagNames 返回 1 到 3 个细粒度知识点，优先复用已有候选，也可提出新标签。"
         )
         question_text = json.dumps(
             payload.question.model_dump(), ensure_ascii=False
@@ -327,7 +379,7 @@ class AnalysisService:
                 tagNames=list(payload.context.get("tagCandidates") or [])[:2],
                 confidence=0.6 if payload.context.get("categoryCandidates") or payload.context.get("tagCandidates") else None,
             ),
-            taxonomySuggestionReason=("mock 仅从 Go 提供的候选生成建议，仍需用户确认。" if payload.context.get("categoryCandidates") or payload.context.get("tagCandidates") else "没有可用的候选分类或标签。"),
+            taxonomySuggestionReason=("AI 已自动完成分类和标签；用户可在题目详情中修改。" if payload.context.get("categoryCandidates") or payload.context.get("tagCandidates") else "没有可用的分类候选。"),
             reviewAdvice=[
                 "优先整理同类题型的判断标准。",
                 "对 OCR 不清晰或带图题，先人工校准后再看解析。",

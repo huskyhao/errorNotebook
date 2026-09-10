@@ -9,6 +9,7 @@ export function cx(...values: Array<string | false | null | undefined>): string 
 export async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
     ...init,
+    credentials: 'include',
     headers: {
       Accept: 'application/json',
       ...(init?.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }),
@@ -61,6 +62,7 @@ export function questionTypeLabel(value?: string | null): string {
 }
 
 const OCR_STATUS_LABELS: Record<string, string> = {
+	queued: 'OCR 排队中',
 	pending: '待识别',
 	uploaded: '已上传',
 	processing: '识别中',
@@ -75,6 +77,7 @@ export function ocrStatusLabel(value: string): string {
 }
 
 const ANALYSIS_STATUS_LABELS: Record<string, string> = {
+	queued: '解析排队',
 	pending: '待解析',
 	processing: '解析中',
 	completed: '已解析',

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"erro-notebook/backend/internal/integrations/ai"
 	"erro-notebook/backend/internal/models"
 )
 
@@ -21,6 +22,38 @@ func TestValidateImageFile(t *testing.T) {
 	pdfHeader.Set("Content-Type", "application/pdf")
 	if err := validateImageFile(&multipart.FileHeader{Filename: "paper.pdf", Header: pdfHeader}); err == nil {
 		t.Fatal("validateImageFile(pdf) returned nil, want rejection")
+	}
+}
+
+func TestCategoryNamesForAIKeepsBroadSubjectsAndCurrentUserCustomCategories(t *testing.T) {
+	parentID := int64(9)
+	categories := []models.Category{
+		{ID: 1, UserID: 0, Name: "数据结构"},
+		{ID: 2, UserID: 0, Name: "图论"},
+		{ID: 3, UserID: 0, Name: "操作系统"},
+		{ID: 4, UserID: 42, Name: "数据库系统"},
+		{ID: 5, UserID: 77, Name: "编译原理"},
+		{ID: 6, UserID: 42, Name: "进程调度", ParentID: &parentID},
+	}
+
+	got := categoryNamesForAI(categories, 42)
+	want := []string{"数据结构", "操作系统", "数据库系统"}
+	if len(got) != len(want) {
+		t.Fatalf("categoryNamesForAI() = %#v, want %#v", got, want)
+	}
+	for index := range want {
+		if got[index] != want[index] {
+			t.Fatalf("categoryNamesForAI() = %#v, want %#v", got, want)
+		}
+	}
+}
+
+func TestValidateTaxonomySuggestionLimitsTagsToThree(t *testing.T) {
+	suggestion := (&QuestionService{}).validateTaxonomySuggestion(&ai.TaxonomySuggestion{
+		TagNames: []string{"标签一", "标签二", "标签三", "标签四"},
+	})
+	if len(suggestion.TagNames) != 3 {
+		t.Fatalf("validateTaxonomySuggestion() kept %d tags, want 3", len(suggestion.TagNames))
 	}
 }
 
@@ -135,6 +168,20 @@ func TestAIStructuredQuestionCarriesStructureQuality(t *testing.T) {
 	}
 	if payload.Metadata.ExtractionMethod == nil || *payload.Metadata.ExtractionMethod != "llm_refined" {
 		t.Fatalf("ExtractionMethod = %v, want llm_refined", payload.Metadata.ExtractionMethod)
+	}
+}
+
+func TestAIStructuredQuestionSerializesEmptyWarningsAsArray(t *testing.T) {
+	payload := toAIStructuredQuestion(&models.Question{
+		ID: 1, Stem: "干净题干", QuestionType: "subjective", SourceType: "manual",
+	}, nil)
+
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	if !strings.Contains(string(encoded), `"warnings":[]`) {
+		t.Fatalf("warnings serialized as null: %s", encoded)
 	}
 }
 

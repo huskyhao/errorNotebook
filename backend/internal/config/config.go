@@ -21,6 +21,8 @@ type Config struct {
 	TaskPollIntervalSeconds      int
 	StorageBackend               string
 	StorageLocalRoot             string
+	SessionSecret                string
+	SessionCookieSecure          bool
 }
 
 func Load() (Config, error) {
@@ -40,6 +42,8 @@ func Load() (Config, error) {
 		TaskPollIntervalSeconds:      getEnvInt("TASK_POLL_INTERVAL_SECONDS", 2),
 		StorageBackend:               getEnv("STORAGE_BACKEND", "local"),
 		StorageLocalRoot:             getEnv("STORAGE_LOCAL_ROOT", "uploads"),
+		SessionSecret:                getEnv("SESSION_SECRET", "change-me-in-production"),
+		SessionCookieSecure:          getEnvBool("SESSION_COOKIE_SECURE", false),
 	}
 
 	if cfg.MySQLDSN == "" {
@@ -50,6 +54,18 @@ func Load() (Config, error) {
 	}
 
 	return cfg, nil
+}
+
+func getEnvBool(key string, fallback bool) bool {
+	raw := strings.TrimSpace(strings.ToLower(os.Getenv(key)))
+	if raw == "" {
+		return fallback
+	}
+	value, err := strconv.ParseBool(raw)
+	if err != nil {
+		return fallback
+	}
+	return value
 }
 
 func getEnv(key string, fallback string) string {

@@ -3,6 +3,8 @@ package handlers
 import (
 	"net/http"
 
+	"erro-notebook/backend/internal/auth"
+	"erro-notebook/backend/pkg/response"
 	"github.com/gin-gonic/gin"
 )
 
@@ -11,15 +13,29 @@ func NewRouter(
 	taxonomyHandler *TaxonomyHandler,
 	questionAIHandler *QuestionAIHandler,
 	practiceHandler *PracticeHandler,
+	sessionManagers ...*auth.Manager,
 ) *gin.Engine {
 	router := gin.Default()
 	router.Use(corsMiddleware())
+	if len(sessionManagers) > 0 && sessionManagers[0] != nil {
+		router.Use(sessionManagers[0].Middleware())
+	}
+	if questionHandler != nil {
+		router.Use(questionHandler.accessMiddleware())
+	}
+	if practiceHandler != nil {
+		router.Use(practiceHandler.accessMiddleware())
+	}
 
 	router.GET("/health", Health)
 
 	api := router.Group("/api/v1")
 	{
 		api.GET("/health", Health)
+		if len(sessionManagers) > 0 && sessionManagers[0] != nil {
+			manager := sessionManagers[0]
+			api.GET("/session", func(c *gin.Context) { response.OK(c, manager.SessionInfo(c)) })
+		}
 
 		if questionHandler != nil {
 			api.POST("/questions/import", questionHandler.Import)

@@ -16,14 +16,15 @@ func (BatchImport) TableName() string {
 
 type BatchImportItem struct {
 	ID              int64     `gorm:"primaryKey" json:"id"`
+	UserID          int64     `gorm:"column:user_id;not null;default:1;index" json:"-"`
 	BatchID         int64     `gorm:"not null;index" json:"batchId"`
 	QuestionID      int64     `gorm:"not null;index" json:"questionId"`
 	JobID           string    `gorm:"column:job_id;type:varchar(64);index" json:"jobId"`
 	ObjectKey       string    `gorm:"column:object_key;type:varchar(1024)" json:"objectKey"`
 	FileIndex       int       `gorm:"not null" json:"fileIndex"`
 	FileName        string    `gorm:"type:varchar(255)" json:"fileName"`
-	Status          string    `gorm:"type:varchar(32);not null;default:'pending'" json:"status"`
-	ProcessingStage string    `gorm:"column:processing_stage;type:varchar(64);not null;default:'pending'" json:"processingStage"`
+	Status          string    `gorm:"type:varchar(32);not null;default:'queued'" json:"status"`
+	ProcessingStage string    `gorm:"column:processing_stage;type:varchar(64);not null;default:'queued'" json:"processingStage"`
 	ErrorMsg        *string   `gorm:"type:text" json:"errorMsg,omitempty"`
 	CreatedAt       time.Time `json:"createdAt"`
 	UpdatedAt       time.Time `json:"updatedAt"`

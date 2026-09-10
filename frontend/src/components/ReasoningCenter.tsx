@@ -32,7 +32,6 @@ interface ReasoningCenterProps {
   onReanalyze: () => void;
   onGenerateLearningState: () => void;
   onAgentAction: (action: AgentActionName, params?: Record<string, unknown>) => void;
-  onApplyTaxonomySuggestion: () => void;
   onConfirmProposal: () => void;
   onRejectProposal: () => void;
   activeProposalId: string | null;
@@ -56,7 +55,6 @@ export default function ReasoningCenter({
   onReanalyze,
   onGenerateLearningState,
   onAgentAction,
-  onApplyTaxonomySuggestion,
   onConfirmProposal,
   onRejectProposal,
   activeProposalId,
@@ -126,13 +124,13 @@ export default function ReasoningCenter({
                     {analysis.content.answer || analysis.answer || '暂无'}
                   </p>
                   <p>{analysis.content.summary || '暂无解析摘要'}</p>
-                  {analysis.content.taxonomySuggestion ? (
+                  {question?.categoryId && analysis.content.taxonomySuggestion && (analysis.content.taxonomySuggestion.categoryName || analysis.content.taxonomySuggestion.tagNames?.length) ? (
                     <div className="taxonomy-suggestion" aria-label="AI 分类标签建议">
-                      <span>AI 分类建议（待确认，来源：{analysis.provider || 'AI service'}）</span>
+                      <span>
+                        AI 已自动分类与打标签（来源：{analysis.provider || 'AI service'}，可在题目详情中修改）
+                      </span>
                       {analysis.content.taxonomySuggestion.categoryName ? <strong>{analysis.content.taxonomySuggestion.categoryName}</strong> : null}
                       {analysis.content.taxonomySuggestion.tagNames?.map((tag) => <em key={tag}>{tag}</em>)}
-                      {analysis.content.taxonomySuggestion.categoryName || analysis.content.taxonomySuggestion.tagNames?.length ? <button className="text-button" type="button" onClick={onApplyTaxonomySuggestion}>确认应用</button> : <small>{analysis.content.taxonomySuggestionReason ?? '暂无可确认匹配'}</small>}
-                      <button className="text-button" type="button" onClick={() => onAgentAction('suggest_taxonomy')} disabled={agentActionPending}>重新生成建议</button>
                     </div>
                   ) : null}
                 </div>
@@ -152,6 +150,12 @@ export default function ReasoningCenter({
                     发送追问
                   </button>
                 </div>
+              </article>
+            ) : null}
+            {question && !analysis && ['queued', 'processing', 'pending'].includes(question.analysisStatus) ? (
+              <article className="analysis-card analysis-card--pending" role="status">
+                <div className="analysis-card-title"><SparkleIcon size={18} /><span>解析中</span></div>
+                <p>题目已保存，正在生成结构化解析；完成后会自动刷新，无需手动刷新页面。</p>
               </article>
             ) : null}
 

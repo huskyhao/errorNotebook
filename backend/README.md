@@ -26,6 +26,7 @@ backend/
 ├── cmd/server/main.go              # entry point
 ├── internal/
 │   ├── config/config.go            # env var loading (.env support)
+│   ├── auth/session.go             # anonymous signed HttpOnly sessions
 │   ├── database/
 │   │   ├── mysql.go                # MySQL connection
 │   │   └── migrate.go             # GORM auto-migration
@@ -84,6 +85,8 @@ Edit `.env` with your settings:
 | `MYSQL_DSN` | **Yes** | — | MySQL connection string |
 | `AI_SERVICE_BASE_URL` | **Yes** | — | Python ai-service base URL |
 | `AI_SERVICE_TIMEOUT_SECONDS` | No | `15` | Timeout for ai-service calls |
+| `SESSION_SECRET` | **Yes in production** | — | HMAC secret for the anonymous session cookie |
+| `SESSION_COOKIE_SECURE` | No | `false` | Set `true` behind HTTPS |
 
 Example `.env`:
 
@@ -102,7 +105,7 @@ The config loader checks `.env` first in CWD, then in `backend/`. Existing envir
 CREATE DATABASE erro_notebook CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 ```
 
-Tables are auto-created by GORM on startup — no manual migrations needed.
+Tables are auto-created by GORM on startup — no manual migrations needed. Existing categories and tags are treated as shared system vocabulary; new anonymous-user taxonomy rows are private to their session user.
 
 ### 4. Install dependencies
 
@@ -178,11 +181,17 @@ go test ./...
 
 The service and repository layers include unit tests; run the command above before delivery.
 
+## Anonymous sessions and data ownership
+
+The backend creates an anonymous `User` and `UserSession` on the first API request. The signed, HttpOnly `erro_session` cookie is the only browser identity; `userId` from request JSON/query parameters is never trusted. `fetch` clients must send credentials. Questions, jobs, analyses, chat, attachments, proposals, practice sessions and learning state are scoped to that session. Clearing browser data or changing device loses access to unregistered data; account upgrade is reserved for a later release.
+
+Categories and tags are currently a global read-only system vocabulary for anonymous users. Users may bind existing values to their own questions, but cannot mutate the shared vocabulary.
+
 ## Current limitations
 
 - Uploaded images use the durable local object-storage adapter by default; an S3/MinIO adapter can be added behind the same interface
 - OCR and analysis run through database-backed workers with automatic retry and lease recovery; a distributed queue is not used yet
-- No auth/authentication
+- No registered account, password, OAuth, cross-device recovery or account upgrade flow
 - Chat messages are persisted per question and forwarded to the Python AI service; an explicit fallback reply is returned when the AI service is unavailable
 - PDF import and paper-splitting APIs are intentionally excluded from the current MVP
-- The local MVP uses the default development user; authentication and multi-user isolation are not implemented yet
+- The local object-storage adapter is scoped by `users/{userId}/questions/{questionId}`; S3/MinIO remains a future adapter

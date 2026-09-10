@@ -34,7 +34,7 @@
 * `LOG_LEVEL=INFO|DEBUG|WARNING|ERROR`
 * `OCR_BACKEND=auto|mock|paddleocr`
 * `OCR_MOCK_DELAY_SECONDS=0.2`
-* `LLM_BACKEND=mock`
+* `LLM_BACKEND=auto|mock|openai|openai_compatible`
 * `LLM_MOCK_DELAY_SECONDS=0.2`
 * `OPENAI_BASE_URL`
 * `OPENAI_API_KEY`
@@ -46,6 +46,8 @@
 * `OCR_BACKEND=auto` 时，会优先尝试 `PaddleOCR`，失败则自动回落到 `mock`
 * `LLM_BACKEND=mock` 明确使用可追溯 mock；`LLM_BACKEND=openai` 或 `openai_compatible` 时配置缺失会返回 `AI_CONFIG_MISSING`，不会伪装成成功
 * `LLM_BACKEND=auto` 且三项配置完整时才会走真实 LLM；真实调用的超时、429、临时 5xx 会在动作预算内重试
+* 如果解析结果出现“当前为 mock 解析结果”，先检查 `GET /internal/v1/health` 的 `llmBackend`；`mock` 表示当前进程明确启用了 mock，需要把本地 `.env` 改为 `LLM_BACKEND=auto`（并重启 AI 服务）后再验证
+* 图片解析会优先调用视觉 provider；视觉 provider 暂时不可用时，若文本 provider 可用，会基于 OCR 结果降级解析并返回 `multimodal_fallback_to_ocr` warning，不会静默生成 mock 结果
 * `AI_MAX_ATTEMPTS` 默认 3（包含首次调用），结构修复最多 1 次；`AI_ACTION_TIMEOUT_SECONDS` 控制单动作超时
 
 ## 启动方式
@@ -217,7 +219,7 @@ $env:OCR_BACKEND="paddleocr"
 
 响应统一包含 `traceId`、`questionId`、`action`、`status`、类型化 `result`、`warnings`、`error` 和 `meta`。`status` 为 `completed`、`needs_input`、`needs_review` 或 `failed`；`meta.source` 明确标记 `mock`/`real`。错误至少包含 `code`、`message`、`retryable`、`traceId`，不透传密钥或上游原始响应。
 
-四类动作结果：`diagnose_mistake` 返回错因、证据、薄弱标签和复习建议；`explain_alternative` 返回换种讲法、重点和检查问题；`hint` 返回 1/2/3 级提示、下一问及泄露标记；`suggest_taxonomy` 只在 Go 提供的候选中返回建议且不会自动生效。缺少作答返回 `needs_input`，只有错误选项而无过程时只能给可能错因。
+四类动作结果：`diagnose_mistake` 返回错因、证据、薄弱标签和复习建议；`explain_alternative` 返回换种讲法、重点和检查问题；`hint` 返回 1/2/3 级提示、下一问及泄露标记；`suggest_taxonomy.categoryName` 只能从 Go 提供的大类学科候选中选择，`tagNames` 返回最多 3 个细知识点并可提出新标签，是否创建/应用由 Go 业务端决定。缺少作答返回 `needs_input`，只有错误选项而无过程时只能给可能错因。
 
 P1 结果同样是建议：`generate_similar_question` 返回一个带 `proposalId`、源题指纹、题型、选项、答案、解析和 `qualityStatus` 的候选；`grade_subjective_answer` 只接受主观题和可追溯 rubric/标准答案/解析，返回分项得分、证据、缺失要点、不确定项和人工复核标记。Python 不创建 Question、不修改练习或学习状态。
 
@@ -234,3 +236,11 @@ python -m pytest -q
 未配置真实 provider 时，报告只代表 mock/契约结果，不代表真实模型内容质量。
 
 这样可以先确认 AI 服务本身，再进入 Go 编排联调。
+
+## 与匿名会话和异步任务的边界（2026-09-10）
+
+ai-service 不接收或保存浏览器 Cookie、Session Token、用户表和业务数据库；Go 只把当前题目的结构化上下文、脱敏学习证据和图片字节传入。Python 返回 OCR/分析的结构化结果、warning 和统一错误，任务状态、重试、租约、用户归属与最终入库仍由 Go 控制。
+
+图片导入由 Go 异步编排：前端轮询 Go 的 `/api/v1/jobs/{jobId}` 和 `/api/v1/questions/{id}`，不会轮询本服务。OCR 题干不可用时由 Go 暂停，题干可用但置信度不足时可以继续分析并保留 warning。未配置真实 provider 时，结果只代表 mock/契约测试。
+
+OCR 结构化会确定性移除题干前缀中的考试界面噪声，例如 `倒计时00:17:35 24/31单选题（分值3.0分，难度：易）`，清洗后的 `stem` 只保留题目正文；`rawText` 始终保留原始 OCR 内容用于回看，`warnings` 增加 `ocr_exam_ui_noise_removed`。LLM 二次结构校验后还会再次执行同一规则，避免模型把界面信息写回题干。

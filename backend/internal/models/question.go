@@ -13,7 +13,7 @@ type Question struct {
 	CorrectAnswer       *string          `gorm:"type:varchar(255)" json:"correctAnswer,omitempty"`
 	UserAnswer          *string          `gorm:"type:text" json:"userAnswer,omitempty"`
 	OCRStatus           string           `gorm:"column:ocr_status;type:varchar(64);not null;default:'uploaded'" json:"ocrStatus"`
-	AnalysisStatus      string           `gorm:"column:analysis_status;type:varchar(64);not null;default:'pending'" json:"analysisStatus"`
+	AnalysisStatus      string           `gorm:"column:analysis_status;type:varchar(64);not null;default:'queued'" json:"analysisStatus"`
 	SourceType          string           `gorm:"type:varchar(64);not null" json:"sourceType"`
 	RawOCRText          *string          `gorm:"column:raw_ocr_text;type:longtext" json:"rawOcrText,omitempty"`
 	StructureWarnings   *string          `gorm:"column:structure_warnings;type:json" json:"-"`
@@ -48,6 +48,7 @@ func (QuestionOption) TableName() string {
 
 type QuestionAsset struct {
 	ID         int64  `gorm:"primaryKey" json:"id"`
+	UserID     int64  `gorm:"column:user_id;not null;default:1;index" json:"-"`
 	QuestionID int64  `gorm:"not null;index" json:"questionId"`
 	AssetType  string `gorm:"column:asset_type;type:varchar(64);not null" json:"assetType"`
 	FileURL    string `gorm:"column:file_url;type:varchar(1024);not null" json:"fileUrl"`

@@ -1,3 +1,98 @@
+# 2026-09-10 taxonomy 结果默认落题，标签输入取消候选菜单
+
+## 本轮调整
+
+- 中栏不再显示“学科暂未确定”一类 taxonomy 文案；AI 未给出大类时，taxonomy 结果不在中栏打扰用户。
+- AI 生成的标签不再依赖分类是否命中：Go 会将最多 3 个标签创建为当前匿名用户私有 Tag，并直接绑定到题目；标签会在右侧题目详情显示。
+- 右侧标签输入框取消候选下拉菜单，输入标签后按 Enter 添加；历史标签仍可通过输入完整名称复用。
+
+---
+
+# 2026-09-10 改为 AI 自动落地分类标签，取消 taxonomy 确认流
+
+## 本轮调整
+
+- 根据用户反馈，taxonomy 不再展示“待确认 / 待应用”，也不再要求点击“应用建议”或“重新生成建议”。分析完成后 Go 自动写入 1 个 AI 选定的大类和最多 3 个标签；用户只在题目详情发现问题时手动修改。
+- 分类仍限定为 408 顶层学科，标签用于同步互斥、生成树、进程调度等细知识点；AI 无法确定大类时才保持未分类并提示原因。
+- 相似题保存、主观题评分等本身涉及新题入库或最终成绩的动作仍保留确认边界，不与题目 taxonomy 自动落地混用。
+
+---
+
+# 2026-09-10 408 大类自动分类与 OCR 考试界面噪声清洗
+
+## 本轮完成
+
+- 数据库迁移确保 `数据结构`、`计算机组成原理`、`操作系统`、`计算机网络` 四个 408 顶层系统分类存在；AI 自动分类只使用这些大类和当前用户自建的顶层学科，不再把“图论、TCP、进程调度”等细知识点当分类。
+- AI 可返回最多 5 个细粒度知识点标签；Go 校验大类后，将尚不存在的标签创建为当前匿名用户私有 Tag，再对未人工设置 taxonomy 的题目默认应用。人工修改仍具有优先级，不会被后续分析覆盖。
+- OCR 结构化新增考试界面前缀清洗，可移除倒计时、题目进度、题型、分值、难度和“第 N 题”；原始 OCR 保留在 `rawText`，清洗后写入 `ocr_exam_ui_noise_removed`。LLM 二次结构校验后再次清洗，防止噪声回流。
+- 历史识别错误可在右侧详情点击“编辑”，修改题干后保存；新导入题目自动使用清洗后的题干。
+
+## 验收
+
+- 用户给出的 `倒计时00:17:35 24/31单选题（分值3.0分，难度：易） 下列哪一种图不一定是树（）。` 已有精确单测，输出题干为 `下列哪一种图不一定是树（）。`。
+- 运行态发现并修复“无 warning 时 Go 把 `question.warnings` 发成 `null`、Python 因要求数组而返回 400”的契约问题；现在固定发送 `[]`，干净题面也能进入分析与自动分类。
+- 真实 provider 验收：“进程和线程区别”自动分类为 `操作系统`，生成 `进程 / 线程 / 进程与线程区别`；用户示例“下列哪一种图不一定是树（）。”自动分类为 `数据结构`，生成 `连通图 / 无环图 / 图的边数`。后者因没有选项和可确认答案进入 `needs_review`，但 taxonomy 已自动落库；验收题已删除。
+- 另一匿名会话只能看到系统标签，无法看到上述私有标签 `进程与线程区别`；四个 408 系统大类已通过 Go API 返回。AI 健康检查为 `ocrBackend=auto / llmBackend=openai_compatible`。
+- Python 全量测试 `26 passed`；P0 `20` 例、P1 `24` 例通过；Go 全量测试与 vet 通过；前端 2 suites / 3 tests 及生产构建通过。
+
+---
+
+# 2026-09-10 图片解析变成 mock 的链路排查与修复
+
+## 根因
+
+- 运行中的 `ai-service` 健康检查曾返回 `{"llmBackend":"mock"}`，且本地 `ai-service/.env` 明确配置了 `LLM_BACKEND=mock`；页面显示的“当前为 mock 解析结果……”正是 `_mock_analysis` 的固定摘要，不是 OCR 或前端轮询生成的内容。
+- 切换到真实模式后发现沙箱内无法连接 `api.deepseek.com` / `api.siliconflow.cn`，沙箱外 443 连通；视觉 provider 不可达时原逻辑会直接 504，且 Go 只有 `HasDiagram=true` 才把原图传给 AI，普通图片题会丢失视觉输入。
+
+## 修复
+
+- 本机 `.env` 改为 `LLM_BACKEND=auto` 并重启 AI 服务；健康检查恢复为 `ocrBackend=auto / llmBackend=openai_compatible`，不再静默走 mock。
+- Go 分析任务只要存在服务端管理的 `ImagePath` 就转发原图，不再用 OCR 推断的 `HasDiagram` 决定是否发送图片。
+- Python 对视觉 provider 增加动作级超时；视觉 provider 暂时不可用且文本 provider 可用时，基于 OCR 结构化结果降级到真实文本 LLM，并返回 `multimodal_fallback_to_ocr` warning；文本 provider 也不可用时明确失败并进入 Go 重试/失败状态，不生成伪成功 mock。
+
+## 验收
+
+- `GET /internal/v1/health`：`llmBackend=openai_compatible`。
+- 真实文本调试请求返回非 mock 摘要；真实图片 multipart 请求在视觉不可达时返回真实文本降级结果和 `multimodal_fallback_to_ocr`，未出现 mock 固定摘要。
+- 新图片 Go 链路已观察到 `OCR completed → analysis processing → analysis 200`；图片题不再因视觉 provider 失败而无限等待。
+- Python 测试在 mock 隔离环境下 `20 passed`；真实 provider 联调受外部端点可用性影响，当前通过明确 warning/重试/超时暴露，不把外部不可达伪装成成功。
+
+---
+
+# 2026-09-10 分类创建、刷新默认选择与 AI taxonomy 默认应用修复
+
+## 本轮完成
+
+- 分类/标签改为“系统词表 + 用户私有词表”：匿名用户可以新增、修改、删除自己的分类和标签，系统项保持只读；因此题库中新建“计算机组成原理”不再被匿名只读策略拦截。
+- 题库首次加载、刷新和筛选不会自动打开第一道题；“全部题目”和“未分类”默认收起，只有用户主动点击题目或带 `questionId` 路由时才打开。
+- Go 将当前用户可见的分类/标签候选传给 Python；分析完成后，若题目尚未人工设置 taxonomy，Go 自动校验并应用 AI 的 category/tag，右栏标记“已自动应用，可手动调整”。人工分类/标签不会被后续分析覆盖。
+- 没有候选时仍保留明确原因；Python mock 文案同步为“未人工设置时由 Go 默认应用，可手动调整”。
+
+## 验收
+
+- 本地匿名会话联调：创建分类返回 `201`；新图片任务从 `queued/queued` 进入 OCR、AI 阶段，完成后无需刷新即可读取题干、解析和自动应用的分类/标签；手动再次应用已自动落库的建议返回过期/幂等保护，不覆盖人工结果。
+- 前端生产构建、前端测试、Go 测试/vet、Python 测试及 P0/P1 离线评测均已执行并通过；真实 provider 质量仍不由 mock 联调结论代替。
+
+---
+
+# 2026-09-10 匿名用户隔离基础与图片导入异步状态修复
+
+## 本轮完成
+
+- Go 新增最小 `User/UserSession`、签名 HttpOnly `erro_session` Cookie、首次访问自动创建匿名身份，以及当前会话归属解析；前端所有请求携带 Cookie，不信任传入 `userId`。
+- Question、附件、分析、Job、聊天、批次、练习、学习状态和 AIProposal 均按用户隔离；题目与练习资源越权统一返回 404；Category/Tag 采用全局只读词表策略。
+- 图片导入立即返回 `jobId/questionId` 和 `queued` 占位；worker 统一支持 `queued/processing/completed/needs_review/failed`，用 `processingStage` 区分 OCR 与 AI，并修复无任务时重复插入空 Job 的问题。
+- 前端增加可取消、按 job/question 去重、1～2 秒起步、网络退避、5 分钟超时的轮询；上传占位、OCR 回填、解析中、待复核、失败重试和切题取消均已接入。
+
+## 验收
+
+- `python -m pytest -q`：19/19；P0/P1 离线评测：20/24；Go `go test ./...`、`go vet ./...`：通过；前端测试 2 suites/3 tests、生产构建：通过。
+- 本地 MySQL/Go/Python mock 联调：图片任务从 `queued/queued` 自动变为 `completed/needs_review`，题干长度 851，分析接口 200，无需刷新；匿名会话复用、不同/伪造 Cookie 隔离通过。
+- 另一匿名会话访问题目、聊天、解析、学习状态、proposal、Job、练习会话均返回 404，列表不包含对方题目；manual/practice 验收临时题已删除。
+- 已知限制：真实 provider 质量、跨设备恢复、正式账号升级和 WebSocket 不在本轮范围；本地数据库中此前一次图片 smoke 的匿名测试记录未能通过原 Cookie 回收，未覆盖用户原有数据，后续可按该匿名会话清理。
+
+---
+
 # 2026-09-09 taxonomy 闭环与 P1 单题能力实现记录
 
 ## 本轮完成
@@ -11,7 +106,10 @@
 
 - `python -m pytest -q`：19/19 通过（含 P0 基线与 P1 action/图片字节契约测试）。
 - `python evals/run_p0_eval.py`：20 例 mock/契约通过；`python evals/run_p1_eval.py`：24 例离线 mock 规则检查。
-- `GOCACHE=.gocache go test ./...`：通过；默认 Go cache trim 受本机权限限制，因此验收使用仓库内独立 cache。`npm test -- --watchAll=false --runInBand` 与 `npm run build` 均通过。
+- `GOCACHE=.gocache go test ./...`、`go vet ./...`：通过；默认 Go cache trim 受本机权限限制，因此验收使用仓库内独立 cache。`npm test -- --watchAll=false --runInBand`：2 suites / 3 tests 通过；`npm run build`：通过。
+- 2026-09-10 本地 MySQL/Go smoke：首次访问、同 Cookie 复用、不同 Cookie 隔离、伪造 Cookie 重新建匿名身份通过；临时题目在另一匿名会话下的题目、附件关联入口、聊天、解析、学习状态、proposal、Job、练习会话均返回 404，列表不包含对方题目；manual/practice 验收临时题已删除。图片上传返回 `jobId/questionId` 与 `queued` 占位，worker 正常领取 OCR→AI 阶段任务，未再出现空 Job 重复插入。
+- 真实异步联调补充：连接本地 Python mock（`ocrBackend=auto`、`llmBackend=mock`）后，图片任务从 `queued/queued` 变为 `completed/needs_review`，题干长度 851，分析接口 200；说明 OCR、AI 分阶段回填和待复核路径均已跑通，结果不代表真实 provider 质量。
+- Python：`python -m pytest -q` 19/19；P0 离线评测 20 例、P1 离线评测 24 例均通过，仍属于 mock/契约验证，不代表真实 provider 质量。
 - 未配置授权真实 provider 或 MySQL 时，真实视觉、真实模型质量和数据库端到端未验证，不把 mock 结果当成真实效果。
 
 ---
@@ -473,3 +571,139 @@ ErroNotebook 已经具备“图片导入 → OCR 结构化 → 题目展示 → 
 暂不建议下一步引入知识图谱、向量库、社区分享、PDF 主线或更多微服务；先把真实 provider、鉴权、人工校准和复习反馈做成可持续闭环。
 
 ---
+# 2026-09-10 当前问题分析与下一步方案
+
+本轮只做问题分析和方案设计，不执行代码修改。
+
+## 1. 图片上传后题目空白、解析结果不自动出现
+
+### 判断
+
+这是“异步任务状态与前端刷新策略不完整”叠加“OCR 需要复核时会阻断分析”的问题：
+
+- 前端上传成功后立即加载刚创建的 Question，此时题干、选项和解析本来可能为空。
+- 单图导入虽然有轮询，但先把导入状态设为结束，轮询期间没有持续刷新题目详情；只在最终状态时更新一次。
+- 当前轮询间隔为 5 秒，分析接口暂时没有结果时被当作普通空结果处理，用户看不到明确的 processing 状态。
+- Go worker 在 OCR 为 `needs_review` 时直接不入队 AI 分析。如果 OCR 仍有可用题干，这会让用户误以为系统卡住。
+
+### 推荐方案
+
+第一阶段先使用可靠轮询，不立即引入 WebSocket：上传接口返回 `jobId/questionId` 后，前端进入统一的导入任务状态机，每 1～2 秒读取任务状态和题目摘要，在 `ocr_processing`、`analysis_pending`、`analysis_processing` 时实时更新中栏；解析完成后再请求完整题目和分析。轮询必须可取消、按任务 ID 去重，并在组件切换题目时停止旧任务。
+
+后端保留并统一以下状态：`queued`、`processing`、`completed`、`needs_review`、`failed`，分别记录 `ocrStatus`、`analysisStatus` 和 `processingStage`。分析接口暂时无数据不能解释成“无解析”，应显示“解析中”。
+
+OCR `needs_review` 建议分两种：题干不可用时停止并要求人工校准；题干可用但置信度不足时继续分析，同时把最终状态标为 `needs_review`，让用户先看到 AI 结果和质量警告。后续再把轮询替换为 SSE，减少等待延迟。
+
+验收标准：上传后 1～2 秒内显示处理阶段；OCR 完成后自动显示题干；AI 分析完成后无需刷新即可显示解析；失败和待复核状态有明确操作；切换题目或重复上传不会出现旧任务覆盖新题目。
+
+## 2. 用户隔离与个性化 Agent
+
+### 推荐的低门槛做法
+
+不建议一开始强制注册。采用“匿名用户 + 可选升级账号”：首次访问时由 Go 创建匿名 User，并通过签名的 HttpOnly Cookie/Session Token 识别；题目、作答、错因和 Agent 记忆都归属于该匿名用户。用户可以直接使用，不需要填写注册信息；以后需要跨设备同步时，再通过邮箱或 OAuth 将匿名用户升级为正式账号并迁移数据。
+
+需要明确告知用户：未注册数据只绑定当前浏览器/设备，清除 Cookie 或更换设备后无法恢复。服务端不能接受前端传来的任意 `userId`，必须从会话解析用户身份。
+
+### 个性化数据模型
+
+不要把整段历史对话直接塞进 Prompt，而是由 Go 维护有限的学习证据：
+
+- `User` / `UserSession`：匿名或正式身份。
+- `Question.userId`、`PracticeSession.userId`、`AIProposal.userId`、附件归属：完成数据隔离。
+- `LearningEvidence`：题目、知识点、错因、作答结果、来源和时间。
+- `UserSkillProfile`：例如 `osi.seven_layers`、`data_structure.linked_list`，保存掌握度、错误次数、最近证据和复习时间。
+- `UserPreference`：解释详细程度、偏好的提示方式、目标难度等。
+
+Agent 每次只接收三层上下文：当前题目、用户偏好、与当前题相关的 Top-N 薄弱知识点及最近证据。比如用户 A 的 OSI 薄弱点只影响 A 的提示和复习推荐，不会进入用户 B 的上下文。Python 只处理 Go 传入的脱敏上下文，学习证据和掌握度仍由 Go 更新。
+
+推荐分三步落地：先做匿名会话隔离，再做知识点/错因证据沉淀，最后做基于证据的 Agent 提示和练习推荐。这样可以避免为了个性化一次性引入复杂注册体系或向量数据库。
+
+## 3. 当前 Agent 是否使用 LangGraph
+
+当前没有使用 LangGraph。实现是 Python 中的显式 `AgentDispatcher`：业务按钮决定 action，代码完成前置校验、调用模型、JSON/schema 校验、领域校验、重试和统一错误返回。这个方案适合当前六个边界清晰、单次请求为主的动作。
+
+LangGraph 是 LangChain 体系中的低层 Agent 编排框架和运行时，核心是把工作流表示为“状态 + 节点 + 边”：可以做条件分支、循环、并行、持久化、流式输出、失败恢复和人工中断；它本身不是模型，也不会自动产生个性化能力。官方定位也强调它主要解决长流程、有状态 Agent 的编排，而不是替开发者决定 Prompt 或业务架构。[LangGraph 官方概览](https://docs.langchain.com/oss/python/langgraph/overview)
+
+放到 ErroNotebook 中，未来可以把一次复杂辅导编成：
+
+`读取题目/用户画像 → 质量检查 → 选择辅导策略 → 调用模型 → 结构校验 → 证据校验 → 需要补充信息或人工确认 → 返回 Go`
+
+但不建议现在立即引入。LangGraph 不能替代 Go 的用户隔离、数据库事务和最终状态控制；当前图片追问、相似题 proposal、主观题评分建议已经可以用显式 dispatcher 可靠完成。只有当项目需要多步推理、流式节点状态、长任务恢复、人工中断后继续或多个专用 Agent 协作时，再考虑在 Python 内部引入 LangGraph，并保持“前端只访问 Go、Python 不写业务库”的边界。
+
+---
+# 2026-09-10 匿名用户隔离与图片导入异步状态修复 Goal 指令
+
+以下内容可直接作为下一轮 `/goal` 指令。本轮只生成指令，不执行实现。
+
+```text
+请以“实现 ErroNotebook 匿名用户隔离基础与图片导入异步状态修复”为本次 goal。请实际完成代码、测试、验收和必要文档，不只输出方案。先完整阅读 AGENTS.md、project.md、webdesign.md、talk.md 最新记录、backend/API.md、ai-service/README.md 及当前实现；先检查工作区并保留已有修改，不执行 reset、clean 或覆盖无关变更。
+
+一、范围和边界
+1. 本轮只完成两件事：
+   - 修复图片上传后题目空白、OCR/AI 解析期间不自动更新的问题。
+   - 建立不强制注册的匿名用户身份与后端数据隔离基础。
+2. 不实现邮箱注册、密码、OAuth、跨设备账号迁移、完整用户画像、向量库、知识图谱或 LangGraph；为后续升级账号和个性化 Agent 预留清晰接口即可。
+3. 保持前端只访问 Go；Go 负责身份、权限、任务状态和数据库；Python 只负责 OCR、LLM、多模态结果，不读取或写入业务数据库。
+
+二、先确认基线
+1. 运行并记录 Python 测试、Go 测试、前端测试/构建和 P0/P1 离线评测。
+2. 检查当前图片导入、Question/Job 状态、worker、题目详情接口和前端 `QuestionWorkbenchPage` 的实际竞态，确认原有修改不被覆盖。
+3. 所有新状态和错误必须兼容当前 API；不要用前端猜测状态或把“暂无结果”当成“解析完成”。
+
+三、修复图片上传和异步状态
+1. 上传接口继续返回 `jobId`、`questionId`。Go 为任务维护可观察的 `queued`、`processing`、`completed`、`needs_review`、`failed`，并分别暴露 OCR 阶段、AI 分析阶段和错误信息。
+2. 优先使用可取消、按 job/question 去重的 1～2 秒轮询，不在本轮引入 WebSocket；可以新增清晰的任务进度接口，也可以扩展现有 Job 查询接口。
+3. 单图和批量导入都必须显示占位题目和明确阶段：上传中、OCR 识别中、解析排队、AI 分析中、待人工复核、失败可重试。任务未完成前不得把 loading 状态提前置为结束。
+4. OCR 结束后立即刷新题干、题型、选项和质量状态；AI 分析结束后立即刷新完整解析、taxonomy 建议和对话上下文，无需手动刷新页面。
+5. 分析接口在后台尚未生成结果时返回/处理为 processing，不显示空白解析。前端必须防止旧题目的轮询结果覆盖当前选中题目，并在切换题目、组件卸载和重复上传时取消旧轮询。
+6. 明确 `needs_review` 策略：题干不可用时暂停并要求校准；题干基本可用但置信度不足时可以继续 AI 分析，最终保留 needs_review 和 warning。失败必须显示错误原因和重试入口。
+7. 对任务轮询增加退避、最大等待时长、网络失败重试和终止提示；不得无限轮询。保留现有数据库 worker 的重试和租约语义。
+
+四、匿名用户身份和隔离
+1. 增加最小 `User` 与 `UserSession` 模型/迁移。首次访问由 Go 创建匿名用户，使用签名且 HttpOnly 的 Cookie/Session Token 识别；不能信任前端传入的 `userId`，不能把浏览器 localStorage 中的普通 ID 当作权限凭证。
+2. 匿名用户不需要注册即可使用。Cookie 丢失、清除浏览器数据或更换设备导致数据不可恢复时，要在产品文案中明确说明。预留未来将匿名用户升级为正式账号的接口，但本轮不实现注册和 OAuth。
+3. 增加 Go 鉴权中间件和 request context 中的当前用户。替换当前固定用户 `1` 的写入和查询路径，至少覆盖 Question、QuestionAsset、ChatMessage、Analysis、Job、BatchImport、PracticeSession、PracticeSessionQuestion、QuestionLearningState、AIProposal 及相关附件对象。
+4. 所有详情、列表、更新、删除、聊天、proposal 确认/拒绝、练习和推荐接口都必须按当前匿名用户做归属校验；跨用户访问统一返回 404 或明确的无权限错误，不泄露资源是否存在。
+5. 处理当前全局 Category/Tag 模型：本轮必须明确选择并实现一种安全策略：
+   - 作为全局系统词表时，对普通匿名用户只读，写操作改为受控管理入口；或
+   - 增加 owner/scope 字段和迁移，使用户自定义 taxonomy 与系统词表隔离。
+   不能让一个匿名用户新增、删除或修改全局分类标签而影响其他用户。
+6. 对象存储 key 必须带用户/题目作用域，读取附件前验证归属；禁止通过客户端传入路径、URL 或 userId 越权读取。
+7. 不在本轮实现完整 UserSkillProfile，但在学习证据和 Agent 请求中保留从 Go 注入当前用户上下文的扩展点；不得把用户 A 的题目、对话或错因发送给用户 B。
+
+五、测试和验收
+1. 增加匿名会话测试：首次访问创建稳定匿名用户、同一 Cookie 复用用户、不同 Cookie 用户隔离、Cookie 缺失重新创建、伪造 userId 无效。
+2. 增加资源归属测试：题目、聊天、附件、分析、Job、proposal、练习会话和推荐不能跨用户读取或修改；重复请求保持幂等。
+3. 增加异步前端/接口测试：新题目占位、OCR processing、analysis processing、完成后自动刷新、needs_review、失败重试、切换题目取消旧轮询、网络暂时失败和超时。
+4. 保留并通过现有 P0/P1 测试、Go→Python multipart 图片契约测试和前端生产构建；不要以 mock 结果替代异步状态或用户隔离测试。
+5. 验收必须证明：上传图片后无需刷新即可看到题干和 AI 解析；不同匿名用户看不到彼此题目和附件；Python 仍不会接触业务用户表；没有注册流程也能完成导入、作答、追问和练习。
+
+六、文档交付
+1. 同步 backend/API.md、ai-service/README.md、project.md、webdesign.md，写清匿名 Cookie、资源归属、任务状态、轮询接口、错误码和匿名数据丢失提示。
+2. 从 talk.md 第一行置顶记录实现内容、测试结果、匿名隔离边界、未实现的账号升级和后续个性化画像计划，旧记录整体保留。
+3. 最终报告必须列出关键文件、数据库迁移、接口示例、测试命令和结果、已知限制；只有代码和测试均完成后才能宣布 goal 完成。
+```
+
+---
+# 2026-09-10 匿名用户隔离与图片导入异步状态修复实现记录
+
+## 本轮已完成
+
+- Go 新增最小 `User`/`UserSession` 模型与 AutoMigrate；首次 API 访问创建匿名用户，使用签名 HttpOnly、SameSite=Lax 的 `erro_session` Cookie，前端请求改为 `credentials: include`。
+- Question 为归属根，题目、附件元数据、分析、Job、聊天、批量导入、练习会话/题目、学习状态和 AI proposal 均按匿名用户隔离；跨用户题目/会话/Job 返回 404。对象存储路径改为 `users/{userId}/questions/{questionId}/...`。
+- Category/Tag 本轮选择全局系统词表只读策略：匿名用户可读取和绑定已有值，不可新增、修改或删除共享分类标签。
+- 图片任务统一使用 `queued`、`processing`、`completed`、`needs_review`、`failed`；worker 区分 OCR/AI 阶段，低置信度但题干可用时继续 AI，题干不可用时停在校准；旧 `pending` Job 仍可接管。
+- 前端单图/重新解析使用可取消、去重、退避、5 分钟上限轮询；上传立即显示占位题目，OCR 后增量刷新题干/选项，AI 后刷新解析/对话，解析未生成时显示“解析中”。切题、重复上传和卸载组件不会让旧结果覆盖当前题目。
+
+## 测试与验收
+
+- 基线：Python `python -m pytest -q` 19/19；Go `$env:GOCACHE=(Join-Path (Get-Location) '.gocache'); go test ./...` 通过；前端 `npm test -- --watchAll=false --runInBand` 1/1 通过。
+- 新增 Go auth 单测覆盖首次建匿名会话、同 Cookie 复用、无 Cookie 隔离、篡改 Cookie 失效及匿名数据丢失提示；Go 全量测试通过。
+- Question/Job/Batch/练习/学习状态和 proposal 已提供 owner-scoped 查询/确认路径；HTTP question/session middleware 在所有相关操作前执行归属检查。
+- 未配置 MySQL/真实 provider 的环境仍不能宣称真实模型质量或数据库端到端已验证；下一步应用两份真实 Cookie 完成上传、作答、追问和练习演示，并核对附件与 Job 的跨用户 404。
+
+## 明确限制和后续
+
+- 本轮不实现邮箱注册、密码、OAuth、正式账号升级、UserSkillProfile、向量库、知识图谱或 LangGraph。
+- 本轮不引入 WebSocket；轮询最长 5 分钟，网络连续失败会提示后台任务仍在处理。
+- 未来账号升级只迁移匿名 UserSession，不改变 Question 及其关联实体的 owner 模型。

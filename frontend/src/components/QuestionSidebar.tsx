@@ -49,13 +49,7 @@ export default function QuestionSidebar({
 }: QuestionSidebarProps) {
   const isFiltering = searchQuery.trim() !== '' || activeTagFilter !== null || favoritedFilter || reviewFilter;
   const reviewCount = questions.filter((item) => item.qualityStatus === 'needs_review').length;
-  const [expandedCats, setExpandedCats] = useState<Set<string>>(() => {
-    const s = new Set<string>();
-    s.add('all');
-    s.add('uncategorized');
-    categoryTree.forEach((c) => s.add(String(c.id)));
-    return s;
-  });
+  const [expandedCats, setExpandedCats] = useState<Set<string>>(() => new Set());
   const [newCatName, setNewCatName] = useState('');
   const [showNewCat, setShowNewCat] = useState(false);
   const [dragOver, setDragOver] = useState<string | null>(null);

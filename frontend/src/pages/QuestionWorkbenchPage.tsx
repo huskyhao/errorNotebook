@@ -21,6 +21,16 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
 }
 
+function waitWithAbort(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timer = window.setTimeout(resolve, ms);
+    signal.addEventListener('abort', () => {
+      window.clearTimeout(timer);
+      reject(new DOMException('aborted', 'AbortError'));
+    }, { once: true });
+  });
+}
+
 function normalizeDraftOptions(options: OptionItem[]): OptionItem[] {
   const byKey = new Map<string, OptionItem>();
   for (const option of options) {
@@ -60,6 +70,7 @@ export default function QuestionWorkbenchPage() {
   const [agentActionPending, setAgentActionPending] = useState(false);
   const [activeProposalId, setActiveProposalId] = useState<string | null>(null);
   const [error, setError] = useState('');
+  const [anonymousNotice, setAnonymousNotice] = useState('');
   const [deletingId, setDeletingId] = useState<number | null>(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState<number | null>(null);
   const [categoryDeleteTarget, setCategoryDeleteTarget] = useState<CategoryTreeNode | null>(null);
@@ -84,11 +95,95 @@ export default function QuestionWorkbenchPage() {
   const [favoritedFilter, setFavoritedFilter] = useState(false);
   const [reviewFilter, setReviewFilter] = useState(false);
   const initialLoadDone = useRef(false);
+  const taxonomyLoadVersion = useRef(0);
   const selectedQuestionIdRef = useRef<number | null>(null);
+  const lifecyclePollRef = useRef<{ key: string; controller: AbortController } | null>(null);
 
   useEffect(() => {
     selectedQuestionIdRef.current = selectedQuestion?.id ?? null;
   }, [selectedQuestion?.id]);
+
+  useEffect(() => {
+    const previousQuestionId = selectedQuestion?.id ?? null;
+    return () => {
+      const active = lifecyclePollRef.current;
+      if (active && (active.key.startsWith(`batch:`) || active.key.startsWith(`question:${previousQuestionId}:`))) {
+        active.controller.abort();
+        lifecyclePollRef.current = null;
+      }
+    };
+  }, [selectedQuestion?.id]);
+
+  function stopLifecyclePolling() {
+    lifecyclePollRef.current?.controller.abort();
+    lifecyclePollRef.current = null;
+  }
+
+  function mergePolledQuestion(question: QuestionItem) {
+    if (selectedQuestionIdRef.current !== question.id) return;
+    setSelectedQuestion((prev) => (prev?.id === question.id ? { ...prev, ...question } : question));
+    setQuestions((prev) => prev.map((item) => (item.id === question.id ? { ...item, ...question } : item)));
+    setDraftStem(question.stem);
+    setDraftAnswer(question.correctAnswer ?? '');
+    setDraftQuestionType(question.questionType);
+    setDraftOptions([...(question.options ?? [])].sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0)));
+  }
+
+  async function pollQuestionLifecycle(questionId: number, jobId: string) {
+    const key = `question:${questionId}:${jobId}`;
+    if (lifecyclePollRef.current?.key === key) return;
+    stopLifecyclePolling();
+    const controller = new AbortController();
+    lifecyclePollRef.current = { key, controller };
+    const startedAt = Date.now();
+    const maxWaitMs = 5 * 60 * 1000;
+    let delayMs = 1200;
+    let networkFailures = 0;
+    try {
+      while (!controller.signal.aborted && Date.now() - startedAt < maxWaitMs) {
+        try {
+          const q = await requestJson<QuestionItem>(`/questions/${questionId}`, { signal: controller.signal });
+          networkFailures = 0;
+          if (selectedQuestionIdRef.current !== questionId) return;
+          mergePolledQuestion(q);
+          if (q.ocrStatus === 'needs_review' && !q.stem.trim()) {
+            setError('OCR 需要人工校准：题干尚未识别，请编辑题干后再继续解析');
+            return;
+          }
+          if (q.analysisStatus === 'completed' || q.analysisStatus === 'needs_review') {
+            const [analysisResult, messages] = await Promise.all([
+              requestJson<AnalysisItem>(`/questions/${questionId}/analysis`, { signal: controller.signal }).catch(() => null),
+              requestJson<ChatMessage[]>(`/questions/${questionId}/chat`, { signal: controller.signal }).catch(() => []),
+            ]);
+            if (selectedQuestionIdRef.current !== questionId) return;
+            setAnalysis(analysisResult);
+            setChatMessages(messages.length > 0 ? messages : buildConversation(q, analysisResult));
+            if (q.analysisStatus === 'needs_review') setError('解析已生成，但题面质量需要人工复核');
+            return;
+          }
+          if (q.ocrStatus === 'failed' || q.analysisStatus === 'failed') {
+            setError(q.ocrStatus === 'failed' ? 'OCR 识别失败，可重试识别或手动校准' : 'AI 解析失败，可重试解析');
+            return;
+          }
+          await waitWithAbort(delayMs, controller.signal);
+          delayMs = 1200;
+        } catch (err) {
+          if (controller.signal.aborted || (err instanceof DOMException && err.name === 'AbortError')) return;
+          networkFailures += 1;
+          if (networkFailures >= 6) {
+            setError('暂时无法获取任务进度，请稍后重试；任务不会被重复提交');
+            return;
+          }
+          await waitWithAbort(Math.min(8000, delayMs * 2), controller.signal);
+          delayMs = Math.min(8000, delayMs * 2);
+        }
+      }
+      if (!controller.signal.aborted) setError('解析等待超时，请检查任务状态后重试');
+    } finally {
+      if (lifecyclePollRef.current?.key === key) lifecyclePollRef.current = null;
+      if (selectedQuestionIdRef.current === questionId) setImporting(false);
+    }
+  }
 
   function buildFilterQuery(): string {
     const params = new URLSearchParams();
@@ -108,10 +203,12 @@ export default function QuestionWorkbenchPage() {
       const routedQuestion = routeQuestionId ? items.find((item) => item.id === routeQuestionId) : null;
       if (routedQuestion) {
         setSelectedQuestion(routedQuestion);
-      } else if (!selectedQuestion && items.length) {
-        setSelectedQuestion(items[0]);
-      } else if (selectedQuestion && !items.some((item) => item.id === selectedQuestion.id) && items.length) {
-        setSelectedQuestion(items[0]);
+      } else if (selectedQuestion && !items.some((item) => item.id === selectedQuestion.id)) {
+        // A refresh or filter change must not silently open the first question.
+        // Keep the workbench empty until the user explicitly selects one.
+        setSelectedQuestion(null);
+        setAnalysis(null);
+        setChatMessages([]);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : '加载失败');
@@ -136,8 +233,10 @@ export default function QuestionWorkbenchPage() {
   }
 
   async function loadTaxonomy() {
+    const loadVersion = ++taxonomyLoadVersion.current;
     try {
       const resp = await requestJson<{ categories: CategoryTreeNode[]; uncategorized: number }>('/categories/tree');
+      if (loadVersion !== taxonomyLoadVersion.current) return;
       setCategoryTree(resp.categories);
       setUncategorizedCount(resp.uncategorized);
       const total = resp.categories.reduce((sum, c) => sum + c.questionCount, 0) + resp.uncategorized;
@@ -147,6 +246,7 @@ export default function QuestionWorkbenchPage() {
     }
     try {
       const tags = await requestJson<TagItem[]>('/tags');
+      if (loadVersion !== taxonomyLoadVersion.current) return;
       setAllTags(tags);
     } catch {
       // taxonomy unavailable
@@ -154,6 +254,7 @@ export default function QuestionWorkbenchPage() {
   }
 
   useEffect(() => {
+    requestJson<{ kind: string; notice: string }>('/session').then((session) => setAnonymousNotice(session.notice)).catch(() => null);
     loadQuestions().catch(() => null);
     loadTaxonomy();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -172,6 +273,7 @@ export default function QuestionWorkbenchPage() {
   useEffect(() => {
     if (!selectedQuestion) return;
     setChatAttachments([]);
+    if (lifecyclePollRef.current?.key.startsWith(`question:${selectedQuestion.id}:`)) return;
     loadQuestionDetail(selectedQuestion.id).catch((err) => setError(err instanceof Error ? err.message : '加载详情失败'));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedQuestion?.id]);
@@ -183,6 +285,9 @@ export default function QuestionWorkbenchPage() {
   }, [routeQuestionId]);
 
   async function handleImport(files: File[]) {
+    stopLifecyclePolling();
+    setAnalysis(null);
+    setChatMessages([]);
     // If single file, use existing import endpoint for faster UX
     if (files.length === 1) {
       setImporting(true);
@@ -195,46 +300,20 @@ export default function QuestionWorkbenchPage() {
           method: 'POST',
           body: formData,
         });
-        await loadQuestions();
-        await loadQuestionDetail(result.questionId);
-        setImporting(false);
-
-        for (let i = 0; i < 60; i++) {
-          await new Promise((r) => setTimeout(r, 5000));
-          const q = await requestJson<QuestionItem>(`/questions/${result.questionId}`).catch(() => null);
-          if (!q) break;
-          if (q.ocrStatus === 'failed') {
-            setError('OCR 识别失败，可在题目详情中重试识别');
-            setSelectedQuestion(q);
-            await loadQuestions();
-            setImporting(false);
-            return;
-          }
-          if (q.ocrStatus === 'needs_review') {
-            setError('OCR 已完成，但题面需要人工校准');
-            setSelectedQuestion(q);
-            await loadQuestions();
-            setImporting(false);
-            return;
-          }
-          if (q.analysisStatus === 'completed') {
-            const analysisResult = await requestJson<AnalysisItem>(`/questions/${result.questionId}/analysis`).catch(() => null);
-            setAnalysis(analysisResult);
-            setSelectedQuestion(q);
-            setChatMessages(buildConversation(q, analysisResult));
-            setImporting(false);
-            return;
-          }
-          if (q.analysisStatus === 'failed') {
-            setError('AI 解析失败，请重新分析');
-            setSelectedQuestion(q);
-            await loadQuestions();
-            setImporting(false);
-            return;
-          }
-        }
-        setError('解析超时，请检查后重试');
-        setImporting(false);
+        const placeholder: QuestionItem = {
+          id: result.questionId,
+          stem: '',
+          questionType: 'subjective',
+          ocrStatus: result.status || 'queued',
+          analysisStatus: 'queued',
+          sourceType: 'image',
+          isFavorited: false,
+          options: [],
+          qualityStatus: 'needs_review',
+        };
+        setSelectedQuestion(placeholder);
+        setQuestions((prev) => [placeholder, ...prev.filter((item) => item.id !== placeholder.id)]);
+        void pollQuestionLifecycle(result.questionId, result.jobId);
       } catch (err) {
         setError(err instanceof Error ? err.message : '导入失败');
         setImporting(false);
@@ -259,48 +338,69 @@ export default function QuestionWorkbenchPage() {
 
       setBatchProgress({ ...result, completed: 0, failed: 0 });
 
-      // Poll batch progress
-      let pollCount = 0;
-      const maxPollCount = 90;
-      const pollTimer = setInterval(async () => {
-        pollCount += 1;
+      const batchKey = `batch:${result.batchId}`;
+      const batchController = new AbortController();
+      lifecyclePollRef.current = { key: batchKey, controller: batchController };
+      let delayMs = 1500;
+      let failures = 0;
+      const startedAt = Date.now();
+      const maxWaitMs = 5 * 60 * 1000;
+      while (!batchController.signal.aborted && Date.now() - startedAt < maxWaitMs) {
         try {
-          const batch = await requestJson<BatchImportResult>(`/batch-imports/${result.batchId}`);
-          const completed = batch.questions.filter((q) => q.status === 'completed' || q.status === 'needs_review').length;
+          const batch = await requestJson<BatchImportResult>(`/batch-imports/${result.batchId}`, { signal: batchController.signal });
+          failures = 0;
+          const completed = batch.questions.filter((q) => ['completed', 'needs_review'].includes(q.status)).length;
           const failed = batch.questions.filter((q) => q.status === 'failed').length;
-          const totalDone = completed + failed;
-          setBatchProgress({ ...batch, completed: totalDone, failed });
-
-          if (batch.questions.every((q) => q.status === 'completed' || q.status === 'failed' || q.status === 'needs_review')) {
-            clearInterval(pollTimer);
+          setBatchProgress({ ...batch, completed: completed + failed, failed });
+          if (batch.questions.every((q) => ['completed', 'failed', 'needs_review'].includes(q.status))) {
             setImporting(false);
             setBatchProgress(null);
+            lifecyclePollRef.current = null;
             await loadQuestions();
-            const firstSuccess = batch.questions.find((q) => q.status === 'completed' || q.status === 'needs_review');
-            if (firstSuccess?.questionId) {
-              await loadQuestionDetail(firstSuccess.questionId);
-            }
-            if (failed > 0) {
-              setError(`导入完成：${failed}/${batch.total} 个文件失败`);
-            }
+            const firstSuccess = batch.questions.find((q) => ['completed', 'needs_review'].includes(q.status));
+            if (firstSuccess?.questionId) await loadQuestionDetail(firstSuccess.questionId);
+            if (failed > 0) setError(`导入完成：${failed}/${batch.total} 个文件失败`);
             return;
           }
-
-          if (pollCount >= maxPollCount) {
-            clearInterval(pollTimer);
+          try {
+            await waitWithAbort(delayMs, batchController.signal);
+          } catch {
+            if (lifecyclePollRef.current?.key === batchKey) lifecyclePollRef.current = null;
             setImporting(false);
             setBatchProgress(null);
-            await loadQuestions();
-            const stuck = batch.questions.filter((q) => q.status !== 'completed' && q.status !== 'failed' && q.status !== 'needs_review');
-            setError(`导入超时：${stuck.length}/${batch.total} 个文件仍未完成，请稍后刷新查看`);
+            return;
           }
+          delayMs = 1500;
         } catch {
-          clearInterval(pollTimer);
-          setImporting(false);
-          setBatchProgress(null);
-          setError('获取批次进度失败');
+          if (batchController.signal.aborted) {
+            if (lifecyclePollRef.current?.key === batchKey) lifecyclePollRef.current = null;
+            setImporting(false);
+            setBatchProgress(null);
+            return;
+          }
+          failures += 1;
+          if (failures >= 6) {
+            setError('获取批次进度失败，请稍后重试；任务仍在后台处理');
+            setImporting(false);
+            setBatchProgress(null);
+            if (lifecyclePollRef.current?.key === batchKey) lifecyclePollRef.current = null;
+            return;
+          }
+          try {
+            await waitWithAbort(delayMs, batchController.signal);
+          } catch {
+            if (lifecyclePollRef.current?.key === batchKey) lifecyclePollRef.current = null;
+            setImporting(false);
+            setBatchProgress(null);
+            return;
+          }
+          delayMs = Math.min(8000, delayMs * 2);
         }
-      }, 2000);
+      }
+      setImporting(false);
+      setBatchProgress(null);
+      if (!batchController.signal.aborted) setError('批量导入等待超时，请稍后查看题库；任务不会被重复提交');
+      if (lifecyclePollRef.current?.key === batchKey) lifecyclePollRef.current = null;
     } catch (err) {
       setError(err instanceof Error ? err.message : '批量导入失败');
       setImporting(false);
@@ -394,31 +494,15 @@ export default function QuestionWorkbenchPage() {
 
   async function handleReanalyze() {
     if (!selectedQuestion) return;
+    stopLifecyclePolling();
     setReanalyzing(true);
     setError('');
     try {
-      await requestJson<{ jobId: string; questionId: number; status: string }>(
+      const queued = await requestJson<{ jobId: string; questionId: number; status: string }>(
         `/questions/${selectedQuestion.id}/analyze`,
         { method: 'POST', body: JSON.stringify({}) },
       );
-      for (let i = 0; i < 72; i++) {
-        await new Promise((r) => setTimeout(r, 5000));
-        const q = await requestJson<QuestionItem>(`/questions/${selectedQuestion.id}`);
-        if (q.analysisStatus === 'completed') {
-          const analysisResult = await requestJson<AnalysisItem>(`/questions/${selectedQuestion.id}/analysis`);
-          setAnalysis(analysisResult);
-          setSelectedQuestion(q);
-          setChatMessages(buildConversation(q, analysisResult));
-          return;
-        }
-        if (q.analysisStatus === 'failed') {
-          setError('AI 解析失败，请重试');
-          setSelectedQuestion(q);
-          await loadQuestions();
-          return;
-        }
-      }
-      setError('解析超时，请检查后重试');
+      await pollQuestionLifecycle(selectedQuestion.id, queued.jobId);
     } catch (err) {
       setError(err instanceof Error ? err.message : '解析失败');
     } finally {
@@ -431,9 +515,10 @@ export default function QuestionWorkbenchPage() {
     setError('');
     try {
       const questionId = selectedQuestion.id;
-      await requestJson(`/questions/${questionId}/ocr/retry`, { method: 'POST', body: JSON.stringify({}) });
+      const retry = await requestJson<{ jobId: string }>(`/questions/${questionId}/ocr/retry`, { method: 'POST', body: JSON.stringify({}) });
       await loadQuestionDetail(questionId);
       await loadQuestions();
+      await pollQuestionLifecycle(questionId, retry.jobId);
     } catch (err) {
       setError(err instanceof Error ? err.message : '重试识别失败');
     }
@@ -529,19 +614,6 @@ export default function QuestionWorkbenchPage() {
     try { await requestJson(`/questions/${selectedQuestion.id}/ai-proposals/${activeProposalId}/reject`, { method: 'POST', body: JSON.stringify({}) }); setActiveProposalId(null); }
     catch (err) { setError(err instanceof Error ? err.message : '放弃候选失败'); }
   }
-
-  async function handleApplyTaxonomySuggestion() {
-    if (!selectedQuestion) return;
-    try {
-      const updated = await requestJson<QuestionItem>(`/questions/${selectedQuestion.id}/taxonomy-suggestion/apply`, { method: 'POST', body: JSON.stringify({}) });
-      setSelectedQuestion(updated);
-      setQuestions((prev) => prev.map((item) => item.id === updated.id ? updated : item));
-      await loadTaxonomy();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : '应用分类建议失败');
-    }
-  }
-
 
   async function handleSelectOption(optionKey: string) {
     if (!selectedQuestion) return;
@@ -757,7 +829,6 @@ export default function QuestionWorkbenchPage() {
           onReanalyze={handleReanalyze}
           onGenerateLearningState={handleGenerateLearningState}
           onAgentAction={handleAgentAction}
-          onApplyTaxonomySuggestion={handleApplyTaxonomySuggestion}
           onConfirmProposal={handleConfirmProposal}
           onRejectProposal={handleRejectProposal}
           activeProposalId={activeProposalId}
@@ -829,6 +900,7 @@ export default function QuestionWorkbenchPage() {
       {saving ? <div className="global-toast">正在保存...</div> : null}
       {reanalyzing ? <div className="global-toast">正在解析...</div> : null}
       {error ? <div className="global-toast is-error">{error}</div> : null}
+      {anonymousNotice ? <div className="global-toast">{anonymousNotice}</div> : null}
       {categoryDeleteTarget ? (
         <ConfirmDialog
           title="删除分类"

@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState } from 'react';
 import { requestJson } from '../utils';
 import type { TagItem } from '../types';
 
@@ -10,31 +10,14 @@ interface TagEditorProps {
 
 export default function TagEditor({ questionTags, allTags, onTagsChange }: TagEditorProps) {
   const [inputValue, setInputValue] = useState('');
-  const [showSuggestions, setShowSuggestions] = useState(false);
   const [creating, setCreating] = useState(false);
-  const inputRef = useRef<HTMLInputElement>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
 
   const currentTagIds = new Set(questionTags.map((t) => t.id));
-  const suggestions = allTags.filter(
-    (t) => !currentTagIds.has(t.id) && t.name.toLowerCase().includes(inputValue.toLowerCase())
-  );
-
-  useEffect(() => {
-    function handleClickOutside(e: MouseEvent) {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
-        setShowSuggestions(false);
-      }
-    }
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
 
   async function addTagById(tagId: number) {
     const newIds = Array.from(new Set([...questionTags.map((t) => t.id), tagId]));
     onTagsChange(newIds);
     setInputValue('');
-    setShowSuggestions(false);
   }
 
   async function removeTag(tagId: number) {
@@ -51,7 +34,6 @@ export default function TagEditor({ questionTags, allTags, onTagsChange }: TagEd
       const newIds = [...questionTags.map((t) => t.id), tag.id];
       onTagsChange(newIds);
       setInputValue('');
-      setShowSuggestions(false);
     } catch {
       // ignore, user retries
     } finally {
@@ -62,7 +44,7 @@ export default function TagEditor({ questionTags, allTags, onTagsChange }: TagEd
   function handleKeyDown(e: React.KeyboardEvent) {
     if (e.key === 'Enter') {
       e.preventDefault();
-      const exact = suggestions.find((t) => t.name === inputValue.trim());
+      const exact = allTags.find((t) => !currentTagIds.has(t.id) && t.name === inputValue.trim());
       if (exact) {
         addTagById(exact.id);
       } else if (inputValue.trim()) {
@@ -75,48 +57,19 @@ export default function TagEditor({ questionTags, allTags, onTagsChange }: TagEd
   }
 
   return (
-    <div className="tag-editor" ref={containerRef}>
+    <div className="tag-editor">
       <div className="tag-editor-add-row">
         <span className="selector-label">标签</span>
         <div className="tag-editor-input-wrap">
           <input
-            ref={inputRef}
             className="tag-editor-input"
             type="text"
             placeholder="添加知识点..."
             value={inputValue}
-            onChange={(e) => {
-              setInputValue(e.target.value);
-              setShowSuggestions(true);
-            }}
-            onFocus={() => setShowSuggestions(true)}
+            onChange={(e) => setInputValue(e.target.value)}
             onKeyDown={handleKeyDown}
             disabled={creating}
           />
-          {showSuggestions && (suggestions.length > 0 || inputValue.trim()) && (
-            <div className="tag-suggestions">
-              {suggestions.map((tag) => (
-                <button
-                  key={tag.id}
-                  type="button"
-                  className="tag-suggestion"
-                  onClick={() => addTagById(tag.id)}
-                >
-                  {tag.name}
-                </button>
-              ))}
-              {inputValue.trim() && !suggestions.some((t) => t.name === inputValue.trim()) && (
-                <button
-                  type="button"
-                  className="tag-suggestion is-create"
-                  onClick={createAndAddTag}
-                  disabled={creating}
-                >
-                  {creating ? '创建中...' : `创建 "${inputValue.trim()}"`}
-                </button>
-              )}
-            </div>
-          )}
         </div>
       </div>
       {questionTags.length > 0 && (

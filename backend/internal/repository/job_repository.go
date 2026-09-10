@@ -43,6 +43,17 @@ func (r *JobRepository) GetByJobID(jobID string) (*models.Job, error) {
 	return &job, nil
 }
 
+func (r *JobRepository) GetByJobIDForUser(jobID string, userID int64) (*models.Job, error) {
+	var job models.Job
+	if err := r.db.Where("job_id = ? AND user_id = ?", jobID, userID).First(&job).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("get job by owner: %w", err)
+	}
+	return &job, nil
+}
+
 func (r *JobRepository) GetLatestByQuestionIDAndType(questionID int64, jobType string) (*models.Job, error) {
 	var job models.Job
 	if err := r.db.Where("question_id = ? AND job_type = ?", questionID, jobType).
@@ -57,7 +68,7 @@ func (r *JobRepository) GetLatestByQuestionIDAndType(questionID int64, jobType s
 
 func (r *JobRepository) FindActiveByQuestionIDAndType(questionID int64, jobType string) (*models.Job, error) {
 	var job models.Job
-	if err := r.db.Where("question_id = ? AND job_type = ? AND status IN ?", questionID, jobType, []string{"pending", "processing"}).
+	if err := r.db.Where("question_id = ? AND job_type = ? AND status IN ?", questionID, jobType, []string{"queued", "pending", "processing"}).
 		Order("id desc").First(&job).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, nil
@@ -75,11 +86,14 @@ func (r *JobRepository) ClaimNext(now time.Time, staleAfter time.Duration) (*mod
 	staleAt := now.Add(-staleAfter)
 	err := r.db.Transaction(func(tx *gorm.DB) error {
 		query := tx.Where(
-			"(status = ? AND (next_run_at IS NULL OR next_run_at <= ?)) OR (status = ? AND locked_at <= ?)",
-			"pending", now, "processing", staleAt,
+			"(status IN ? AND (next_run_at IS NULL OR next_run_at <= ?)) OR (status = ? AND locked_at <= ?)",
+			[]string{"queued", "pending"}, now, "processing", staleAt,
 		).Order("created_at asc").Limit(1).Clauses(clause.Locking{Strength: "UPDATE", Options: "SKIP LOCKED"})
 		if err := query.Find(&job).Error; err != nil {
 			return fmt.Errorf("find claimable job: %w", err)
+		}
+		if job.ID == 0 {
+			return nil
 		}
 
 		job.Status = "processing"
@@ -108,7 +122,7 @@ func (r *JobRepository) ClaimNext(now time.Time, staleAfter time.Duration) (*mod
 
 func (r *JobRepository) ResetForRetry(job *models.Job) error {
 	now := time.Now()
-	job.Status = "pending"
+	job.Status = "queued"
 	job.NextRunAt = &now
 	job.LockedAt = nil
 	job.FinishedAt = nil

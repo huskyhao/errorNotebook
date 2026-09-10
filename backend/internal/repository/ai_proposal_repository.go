@@ -59,6 +59,17 @@ func (r *AIProposalRepository) Get(proposalID string) (*models.AIProposal, error
 	return &proposal, nil
 }
 
+func (r *AIProposalRepository) GetForUser(proposalID string, userID int64) (*models.AIProposal, error) {
+	var proposal models.AIProposal
+	if err := r.db.Where("proposal_id = ? AND user_id = ?", proposalID, userID).First(&proposal).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("get ai proposal by owner: %w", err)
+	}
+	return &proposal, nil
+}
+
 func (r *AIProposalRepository) Update(proposal *models.AIProposal) error {
 	if err := r.db.Save(proposal).Error; err != nil {
 		return fmt.Errorf("update ai proposal: %w", err)
@@ -177,7 +188,11 @@ func (r *AIProposalRepository) Reject(proposalID string, userID int64) error {
 func (r *AIProposalRepository) ConfirmGrade(proposalID string, sessionID int64, orderIndex int, sourceFingerprint string, scoreOverride *float64, feedbackOverride *string, confirmedBy ...int64) error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
 		var proposal models.AIProposal
-		if err := tx.Where("proposal_id = ?", proposalID).First(&proposal).Error; err != nil {
+		proposalQuery := tx.Where("proposal_id = ?", proposalID)
+		if len(confirmedBy) > 0 {
+			proposalQuery = proposalQuery.Where("user_id = ?", confirmedBy[0])
+		}
+		if err := proposalQuery.First(&proposal).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return ErrAIProposalNotFound
 			}

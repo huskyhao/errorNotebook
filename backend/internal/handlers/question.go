@@ -20,6 +20,24 @@ type QuestionHandler struct {
 	jobService      *services.JobService
 }
 
+// accessMiddleware protects every /questions/:id route, including nested
+// chat, analysis, proposal and learning-state endpoints. It deliberately
+// returns the same not-found result for another anonymous user's question.
+func (h *QuestionHandler) accessMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		path := strings.TrimPrefix(c.Request.URL.Path, "/api/v1/questions/")
+		part := strings.Split(path, "/")[0]
+		if id, err := strconv.ParseInt(part, 10, 64); err == nil && id > 0 {
+			if err := h.questionService.AuthorizeQuestion(c.Request.Context(), id); err != nil {
+				response.Error(c, http.StatusNotFound, "QUESTION_NOT_FOUND", "question not found")
+				c.Abort()
+				return
+			}
+		}
+		c.Next()
+	}
+}
+
 func NewQuestionHandler(
 	questionService *services.QuestionService,
 	jobService *services.JobService,
@@ -394,7 +412,7 @@ func (h *QuestionHandler) GetAIProposal(c *gin.Context) {
 	if !ok {
 		return
 	}
-	proposal, err := h.questionService.GetAIProposal(c.Param("proposalId"))
+	proposal, err := h.questionService.GetAIProposal(c.Request.Context(), c.Param("proposalId"))
 	if err != nil {
 		response.Error(c, http.StatusInternalServerError, "PROPOSAL_FETCH_FAILED", err.Error())
 		return
@@ -436,7 +454,7 @@ func (h *QuestionHandler) RejectAIProposal(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if err := h.questionService.RejectAIProposal(c.Param("proposalId"), questionID); err != nil {
+	if err := h.questionService.RejectAIProposal(c.Request.Context(), c.Param("proposalId"), questionID); err != nil {
 		if errors.Is(err, services.ErrProposalConflict) {
 			response.Error(c, http.StatusNotFound, "PROPOSAL_NOT_FOUND", "proposal not found")
 			return
@@ -603,7 +621,7 @@ func (h *QuestionHandler) GetJob(c *gin.Context) {
 		return
 	}
 
-	job, err := h.jobService.GetByJobID(jobID)
+	job, err := h.jobService.GetByJobID(c.Request.Context(), jobID)
 	if err != nil {
 		if errors.Is(err, services.ErrJobNotFound) {
 			response.Error(c, http.StatusNotFound, "JOB_NOT_FOUND", "job not found")
@@ -622,7 +640,7 @@ func (h *QuestionHandler) RetryJob(c *gin.Context) {
 		response.Error(c, http.StatusBadRequest, "INVALID_JOB_ID", "jobId is required")
 		return
 	}
-	job, err := h.jobService.RetryJob(jobID)
+	job, err := h.jobService.RetryJob(c.Request.Context(), jobID)
 	if err != nil {
 		if errors.Is(err, services.ErrJobNotFound) {
 			response.Error(c, http.StatusNotFound, "JOB_NOT_FOUND", "job not found")

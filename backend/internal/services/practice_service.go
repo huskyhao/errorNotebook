@@ -137,7 +137,13 @@ func (s *PracticeService) CreateSession(userID int64, input CreateSessionInput) 
 	}
 
 	for _, qid := range input.QuestionIDs {
-		q, err := s.questionRepo.GetByID(qid)
+		var q *models.Question
+		var err error
+		if userID > 0 {
+			q, err = s.questionRepo.GetByIDForUser(qid, userID)
+		} else {
+			q, err = s.questionRepo.GetByID(qid)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("get question %d: %w", qid, err)
 		}
@@ -172,6 +178,7 @@ func (s *PracticeService) CreateSession(userID int64, input CreateSessionInput) 
 	items := make([]models.PracticeSessionQuestion, len(input.QuestionIDs))
 	for i, qid := range input.QuestionIDs {
 		items[i] = models.PracticeSessionQuestion{
+			UserID:        userID,
 			SessionID:     session.ID,
 			QuestionID:    qid,
 			OrderIndex:    i,
@@ -185,6 +192,56 @@ func (s *PracticeService) CreateSession(userID int64, input CreateSessionInput) 
 	}
 
 	return s.buildDetail(session.ID, false)
+}
+
+func (s *PracticeService) AuthorizeSession(userID, sessionID int64) error {
+	session, err := s.practiceRepo.GetByIDForUser(sessionID, userID)
+	if err != nil {
+		return err
+	}
+	if session == nil {
+		return fmt.Errorf("session not found")
+	}
+	return nil
+}
+
+func (s *PracticeService) GetPracticeRecommendationsForUser(userID int64, now time.Time) ([]PracticeRecommendationGroup, error) {
+	if userID <= 0 {
+		return s.GetPracticeRecommendations(now)
+	}
+	limit := 8
+	due, err := s.learningRepo.DueForReviewForUser(userID, now, limit)
+	if err != nil {
+		return nil, err
+	}
+	recentWrong, err := s.learningRepo.RecentWrongForUser(userID, limit)
+	if err != nil {
+		return nil, err
+	}
+	weakStates, err := s.learningRepo.WithWeaknessTagsForUser(userID, limit)
+	if err != nil {
+		return nil, err
+	}
+	newQuestions, err := s.learningRepo.NewQuestionsForUser(userID, limit)
+	if err != nil {
+		return nil, err
+	}
+	mixedQuestions, err := s.learningRepo.MixedQuestionsForUser(userID, limit)
+	if err != nil {
+		return nil, err
+	}
+	weakTag := topWeaknessTag(weakStates)
+	weakReason := "按薄弱标签聚合，优先复盘高频出错点"
+	if weakTag != "" {
+		weakReason = "围绕「" + weakTag + "」集中练习"
+	}
+	return []PracticeRecommendationGroup{
+		buildRecommendationGroup("today_review", "今日复习", "下次复习时间已到的题目", idsFromStates(due)),
+		buildRecommendationGroup("recent_wrong", "最近错题", "按最近练习记录优先回看答错题", idsFromStates(recentWrong)),
+		buildRecommendationGroup("weak_points", "薄弱专项", weakReason, idsFromStates(weakStates)),
+		buildRecommendationGroup("new_questions", "新题巩固", "尚未练习或没有掌握记录的题目", idsFromQuestions(newQuestions)),
+		buildRecommendationGroup("mixed_random", "随机混合", "混合抽取题库题目，适合快速自测", idsFromQuestions(mixedQuestions)),
+	}, nil
 }
 
 func (s *PracticeService) GetSession(sessionID int64) (*PracticeSessionDetail, error) {
@@ -307,7 +364,7 @@ func (s *PracticeService) SubmitSession(sessionID int64) (*PracticeSessionResult
 			return nil, err
 		}
 		if s.learningRepo != nil {
-			_ = s.updateLearningAfterPractice(item.Question.ID, grade, time.Now())
+			_ = s.updateLearningAfterPractice(session.UserID, item.Question.ID, grade, time.Now())
 		}
 	}
 
@@ -361,8 +418,8 @@ func (s *PracticeService) GetPracticeRecommendations(now time.Time) ([]PracticeR
 	}, nil
 }
 
-func (s *PracticeService) updateLearningAfterPractice(questionID int64, grade practiceGrade, now time.Time) error {
-	state, err := s.learningRepo.Ensure(questionID)
+func (s *PracticeService) updateLearningAfterPractice(userID, questionID int64, grade practiceGrade, now time.Time) error {
+	state, err := s.learningRepo.EnsureForUser(questionID, userID)
 	if err != nil {
 		return err
 	}
@@ -484,11 +541,17 @@ func (s *PracticeService) ConfirmGradeSuggestion(ctx context.Context, sessionID 
 	return s.proposalRepo.ConfirmGrade(proposalID, sessionID, orderIndex, practiceAnswerFingerprint(question, answer), score, feedback, session.UserID)
 }
 
-func (s *PracticeService) GetGradeSuggestion(proposalID string, questionID int64) (*models.AIProposal, error) {
+func (s *PracticeService) GetGradeSuggestion(ctx context.Context, proposalID string, questionID int64) (*models.AIProposal, error) {
 	if s.proposalRepo == nil {
 		return nil, fmt.Errorf("proposal repository unavailable")
 	}
-	proposal, err := s.proposalRepo.Get(proposalID)
+	var proposal *models.AIProposal
+	var err error
+	if userID := currentUserID(ctx); userID > 0 {
+		proposal, err = s.proposalRepo.GetForUser(proposalID, userID)
+	} else {
+		proposal, err = s.proposalRepo.Get(proposalID)
+	}
 	if err != nil {
 		return nil, err
 	}

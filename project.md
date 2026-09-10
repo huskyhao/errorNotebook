@@ -21,7 +21,7 @@ ErroNotebook 的核心目标不是做泛题库、试卷拆题系统或普通聊�
 7. 系统追踪掌握度并推荐下一组复习题
 8. 用户进入科学练习并持续更新学习状态
 
-当前 P1 单题能力已纳入同一闭环：解析会在现有候选范围内生成 taxonomy 建议，用户确认后由 Go 应用；追问图片以实际字节进入 Python 视觉 provider；相似题先保存为待确认 proposal；主观题只生成带评分依据的 AI 建议，最终确认和学习状态仍由 Go 控制。
+当前 P1 单题能力已纳入同一闭环：解析会在现有候选范围内生成 taxonomy，题目尚未人工设置时由 Go 自动应用，用户发现问题后可手动调整；追问图片以实际字节进入 Python 视觉 provider；相似题先保存为待确认 proposal；主观题只生成带评分依据的 AI 建议，最终确认和学习状态仍由 Go 控制。
 
 PDF 上传、试卷拆题、批次校对与整卷作答已经从当前 MVP 页面、接口和实现主线移除。PDF 只作为未来可能重新评估的可选扩展，不预留当前交付承诺。
 
@@ -146,7 +146,7 @@ MVP 保留八类题型：`single_choice`、`multiple_choice`、`true_false`、`f
 
 * OCR 输出应区分“原始 OCR 结果”和“清洗后的题目结构”
 * 结构化结果应是标准 JSON，而不是纯文本说明
-* OCR 后、入库前需要做二次结构化纠错，先规则解析，再交给 LLM 做题面结构校验
+* OCR 后、入库前需要做二次结构化纠错，先用确定性规则剥离题干开头的倒计时、题号进度、题型、分值、难度等考试界面信息，再交给 LLM 做题面结构校验；`rawText` 保留原始证据，发生清洗时记录 `ocr_exam_ui_noise_removed`
 * LLM 校验只负责恢复题干与 A/B/C/D 选项边界，不负责解题、不生成答案解析
 * 需要清理 `OA.`、`O B.`、`D。`、孤立 `O`、孤立 `.` 等选项噪声
 * 如果 B 与 D 之间存在明显选项内容但缺少 `C.` 标记，LLM 校验可恢复为 C；如果确实无法确认，不能编造内容
@@ -179,7 +179,7 @@ MVP 保留八类题型：`single_choice`、`multiple_choice`、`true_false`、`f
 
 前端详情区明确显示“学科分类（单选）”与“知识点标签（可多选）”。人工可以随时修改；标签接口整体替换该题标签关联，并由 Go 去重、校验 ID 后持久化。分类删除不会删除题目，题目会移动到未分类；`全部题目` 和 `未分类` 属于系统视图。
 
-AI 自动分类的边界：Python AI 只返回可选的 `taxonomySuggestion`（`categoryName`、`tagNames`、可选 `confidence`），不直接写库、不直接决定生效结果。Go 接收并保存建议，负责校验 category 是否为现有顶层分类、标签是否为合法标签；后续由用户确认后通过 Go 的题目/标签接口最终生效。本轮不自动创建分类、不把知识点升级为分类。
+taxonomy 采用系统词表与用户私有词表并存：系统预置 `数据结构`、`计算机组成原理`、`操作系统`、`计算机网络` 四个 408 顶层分类，匿名用户也可以新建、修改和删除自己的分类/标签，系统项只读。AI 只返回可选的 `taxonomySuggestion`（`categoryName`、`tagNames`、可选 `confidence`）：category 只能从大类学科候选中选择，每题最多 3 个细知识点 tag，可复用已有项或提出新项。Go 将新 tag 创建为当前匿名用户私有数据，校验后在题目分析完成时自动应用；用户不需要确认，发现问题后可在右侧手动调整。本轮不把知识点升级为分类。
 
 ## 5.5 AI 解析
 
@@ -607,7 +607,7 @@ Go 接到错误后：
 
 建议：
 
-* 上传后每 2 到 3 秒轮询一次题目状态
+* 上传后以约 1.2 秒起步、最多退避到 8 秒的轮询读取题目状态
 * OCR/解析完成或失败后停止轮询
 
 原因：
@@ -752,7 +752,7 @@ Go 接到错误后：
 * tags 是多值知识点维度；`POST /api/v1/questions/{id}/tags` 整体替换标签集合，Go 会去重并拒绝不存在的 tag ID。
 * 分类创建/更新不接受 `parentId`，避免把章节或 TCP、UDP 等知识点误建成 category。
 
-AI 建议契约（随解析结果返回的可选字段，当前只保存建议，不自动应用）：
+AI 建议契约（随解析结果返回的可选字段）：
 
 ```json
 {
@@ -764,7 +764,7 @@ AI 建议契约（随解析结果返回的可选字段，当前只保存建议�
 }
 ```
 
-Python 只负责产生这段建议；Go 负责将其纳入解析记录、校验候选是否存在，并在用户确认后通过上述分类/标签业务接口生效。
+Python 只负责产生这段结果；Go 负责将其纳入解析记录、校验当前用户可见候选是否存在，并在题目没有人工 taxonomy 时通过上述分类/标签业务接口自动生效。用户仍可在题目详情中手动改分类或标签；没有可用大类时保持未分类并提示原因。
 
 ## 11.11 学习状态与推荐练习
 
@@ -823,7 +823,7 @@ Python 只负责产生这段建议；Go 负责将其纳入解析记录、校验�
 | user_answer | varchar nullable | 用户最近一次作答 |
 | review_state | varchar | 学习状态 |
 | ocr_status | varchar | uploaded/processing/completed/failed |
-| analysis_status | varchar | pending/processing/completed/failed |
+| analysis_status | varchar | queued/processing/completed/needs_review/failed |
 | source_type | varchar | image/manual |
 | raw_ocr_text | longtext nullable | OCR 原始文本 |
 | structure_warnings | json nullable | OCR 后结构化纠错 warning |
@@ -1366,3 +1366,15 @@ func (c *Client) ParseQuestionImage(
 P0 的 Go 对外接入包括中栏动作代理和分类建议确认应用；Python 正式解析接口使用 multipart 的 `payload`/`file` 契约。图片追问、相似题生成和主观题辅助批改继续作为 P1，不进入当前交付承诺。
 
 这套方案足够工程化，同时又不会因为过早引入复杂分布式设计而拖慢 MVP 落地。
+
+# 20. 匿名用户隔离与图片导入异步基线（2026-09-10）
+
+本轮将“无需注册即可完成单题闭环”落为实现约束：Go 首次 API 访问创建匿名 `User` 与 `UserSession`，使用签名 HttpOnly、SameSite=Lax 的 `erro_session` Cookie。前端请求必须携带 credentials；服务端不信任任何传入的 `userId`。未注册数据只绑定当前浏览器，清除 Cookie 或更换设备后无法恢复，本轮不实现邮箱、密码、OAuth 或跨设备升级。
+
+Question 是数据归属根。QuestionAsset、Analysis、Job、ChatMessage、BatchImport、PracticeSession、PracticeSessionQuestion、QuestionLearningState、AIProposal 增加/使用用户作用域；详情、列表、写入、删除、聊天、proposal、练习和推荐统一按当前会话校验，越权按 404 处理。对象存储 key 使用 `users/{userId}/questions/{questionId}/...`。Category/Tag 采用系统词表与用户私有词表并存策略，匿名用户可管理自己的 taxonomy，系统项只读；AI taxonomy 在无人工选择时默认应用。
+
+图片导入接口立即返回 `jobId`、`questionId` 和 `queued` 占位状态。Go worker 维护 `queued`、`processing`、`completed`、`needs_review`、`failed`，并通过 `processingStage` 区分 OCR 与 AI 分析；前端使用可取消、按任务去重、1.2 秒起步并带网络退避的轮询，最长等待 5 分钟。OCR 完成即刷新题干/题型/选项，AI 完成即刷新解析、taxonomy 建议和对话；解析未生成时显示“解析中”。切题、重复上传和卸载组件会取消旧轮询。旧数据库 `pending` Job 仍兼容接管。
+
+图片分析优先使用 Go 转发的原图调用视觉 provider；视觉 provider 暂时不可达时，Python 在文本 provider 可用的前提下基于 OCR 结果降级解析并标记 `multimodal_fallback_to_ocr`，两者都不可用则明确失败并由 Go 重试，禁止把 mock 摘要伪装成真实结果。
+
+未来账号升级只需将匿名 UserSession 迁移到正式身份，不改变业务表归属模型；本轮不实现 UserSkillProfile、向量库、知识图谱或 LangGraph。

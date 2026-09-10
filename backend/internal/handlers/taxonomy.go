@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"erro-notebook/backend/internal/auth"
 	"erro-notebook/backend/internal/repository"
 	"erro-notebook/backend/internal/services"
 	"erro-notebook/backend/pkg/response"
@@ -21,7 +22,8 @@ func NewTaxonomyHandler(taxonomyService *services.TaxonomyService, questionRepo 
 }
 
 func (h *TaxonomyHandler) ListCategories(c *gin.Context) {
-	items, err := h.taxonomyService.ListCategories()
+	userID, _ := auth.UserIDFromContext(c.Request.Context())
+	items, err := h.taxonomyService.ListCategories(userID)
 	if err != nil {
 		response.Error(c, http.StatusInternalServerError, "CATEGORY_LIST_FAILED", err.Error())
 		return
@@ -41,7 +43,8 @@ func (h *TaxonomyHandler) CreateCategory(c *gin.Context) {
 		return
 	}
 
-	item, err := h.taxonomyService.CreateCategory(req.Name, req.ParentID)
+	userID, _ := auth.UserIDFromContext(c.Request.Context())
+	item, err := h.taxonomyService.CreateCategory(userID, req.Name, req.ParentID)
 	if err != nil {
 		if errors.Is(err, services.ErrNestedCategoryNotSupported) || errors.Is(err, services.ErrEmptyTaxonomyName) {
 			response.Error(c, http.StatusBadRequest, "INVALID_CATEGORY", err.Error())
@@ -54,7 +57,8 @@ func (h *TaxonomyHandler) CreateCategory(c *gin.Context) {
 }
 
 func (h *TaxonomyHandler) ListTags(c *gin.Context) {
-	items, err := h.taxonomyService.ListTags()
+	userID, _ := auth.UserIDFromContext(c.Request.Context())
+	items, err := h.taxonomyService.ListTags(userID)
 	if err != nil {
 		response.Error(c, http.StatusInternalServerError, "TAG_LIST_FAILED", err.Error())
 		return
@@ -73,7 +77,8 @@ func (h *TaxonomyHandler) CreateTag(c *gin.Context) {
 		return
 	}
 
-	item, err := h.taxonomyService.CreateTag(req.Name)
+	userID, _ := auth.UserIDFromContext(c.Request.Context())
+	item, err := h.taxonomyService.CreateTag(userID, req.Name)
 	if err != nil {
 		if errors.Is(err, services.ErrEmptyTaxonomyName) {
 			response.Error(c, http.StatusBadRequest, "INVALID_TAG", err.Error())
@@ -98,10 +103,15 @@ func (h *TaxonomyHandler) UpdateCategory(c *gin.Context) {
 		return
 	}
 
-	category, err := h.taxonomyService.UpdateCategory(id, req.Name, req.ParentID)
+	userID, _ := auth.UserIDFromContext(c.Request.Context())
+	category, err := h.taxonomyService.UpdateCategory(userID, id, req.Name, req.ParentID)
 	if err != nil {
 		if errors.Is(err, services.ErrNestedCategoryNotSupported) || errors.Is(err, services.ErrEmptyTaxonomyName) {
 			response.Error(c, http.StatusBadRequest, "INVALID_CATEGORY", err.Error())
+			return
+		}
+		if errors.Is(err, repository.ErrTaxonomyNotOwned) {
+			response.Error(c, http.StatusNotFound, "CATEGORY_NOT_FOUND", "category not found")
 			return
 		}
 		response.Error(c, http.StatusInternalServerError, "CATEGORY_UPDATE_FAILED", err.Error())
@@ -122,7 +132,12 @@ func (h *TaxonomyHandler) DeleteCategory(c *gin.Context) {
 		return
 	}
 
-	if err := h.taxonomyService.DeleteCategory(id); err != nil {
+	userID, _ := auth.UserIDFromContext(c.Request.Context())
+	if err := h.taxonomyService.DeleteCategory(userID, id); err != nil {
+		if errors.Is(err, repository.ErrTaxonomyNotOwned) {
+			response.Error(c, http.StatusNotFound, "CATEGORY_NOT_FOUND", "category not found")
+			return
+		}
 		response.Error(c, http.StatusInternalServerError, "CATEGORY_DELETE_FAILED", err.Error())
 		return
 	}
@@ -137,7 +152,12 @@ func (h *TaxonomyHandler) DeleteTag(c *gin.Context) {
 		return
 	}
 
-	if err := h.taxonomyService.DeleteTag(id); err != nil {
+	userID, _ := auth.UserIDFromContext(c.Request.Context())
+	if err := h.taxonomyService.DeleteTag(userID, id); err != nil {
+		if errors.Is(err, repository.ErrTaxonomyNotOwned) {
+			response.Error(c, http.StatusNotFound, "TAG_NOT_FOUND", "tag not found")
+			return
+		}
 		response.Error(c, http.StatusInternalServerError, "TAG_DELETE_FAILED", err.Error())
 		return
 	}
@@ -146,17 +166,18 @@ func (h *TaxonomyHandler) DeleteTag(c *gin.Context) {
 }
 
 func (h *TaxonomyHandler) GetCategoryTree(c *gin.Context) {
-	counts, err := h.questionRepo.CountByCategory()
+	userID, _ := auth.UserIDFromContext(c.Request.Context())
+	counts, err := h.questionRepo.CountByCategoryForUser(userID)
 	if err != nil {
 		response.Error(c, http.StatusInternalServerError, "CATEGORY_TREE_FAILED", err.Error())
 		return
 	}
-	uncategorized, err := h.questionRepo.CountUncategorized()
+	uncategorized, err := h.questionRepo.CountUncategorizedForUser(userID)
 	if err != nil {
 		response.Error(c, http.StatusInternalServerError, "CATEGORY_TREE_FAILED", err.Error())
 		return
 	}
-	tree, err := h.taxonomyService.GetCategoryTree(counts)
+	tree, err := h.taxonomyService.GetCategoryTree(userID, counts)
 	if err != nil {
 		response.Error(c, http.StatusInternalServerError, "CATEGORY_TREE_FAILED", err.Error())
 		return

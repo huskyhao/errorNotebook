@@ -86,8 +86,8 @@ type AnalysisPayload struct {
 }
 
 // TaxonomySuggestion is advisory only. The Go business layer stores it with
-// the analysis and remains responsible for validating and applying any
-// category/tag changes after user confirmation.
+// the analysis, validates it, and applies it by default only when the user has
+// not already chosen a taxonomy.
 type TaxonomySuggestion struct {
 	CategoryName       string   `json:"categoryName,omitempty"`
 	TagNames           []string `json:"tagNames,omitempty"`

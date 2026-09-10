@@ -12,6 +12,41 @@ from app.services.ocr_backends import OCRBackendResult, has_diagram_hint
 _OPTION_LINE_PATTERN = re.compile(r"^\s*(?P<noise>[Oo0〇○]\s*)?(?P<key>[A-D])\s*(?P<sep>[\.、．:：。])?\s*(?P<content>.*)$")
 _NOISE_ONLY_PATTERN = re.compile(r"^[Oo0〇○\.\s。．]+$")
 
+# Common exam-player chrome that OCR may concatenate with the question stem.
+# Each pattern is anchored so legitimate numbers inside a stem are preserved.
+_QUESTION_UI_PREFIX_PATTERNS = (
+    re.compile(r"^(?:倒计时|剩余时间|剩余)\s*[:：]?\s*\d{1,2}:\d{2}(?::\d{2})?\s*"),
+    re.compile(r"^\d{1,4}\s*/\s*\d{1,4}\s*"),
+    re.compile(r"^(?:单选题|多选题|判断题|填空题|简答题|计算题|主观题)\s*"),
+    re.compile(
+        r"^[（(]\s*(?:"
+        r"分值\s*[:：]?\s*\d+(?:\.\d+)?\s*分?"
+        r"(?:\s*[,，;；]\s*难度\s*[:：]?\s*[^）)]{1,8})?"
+        r"|难度\s*[:：]?\s*[^）)]{1,8}"
+        r")\s*[）)]\s*"
+    ),
+    re.compile(
+        r"^分值\s*[:：]?\s*\d+(?:\.\d+)?\s*分?"
+        r"(?:\s*[,，;；]\s*难度\s*[:：]?\s*\S{1,8})?\s*"
+    ),
+    re.compile(r"^难度\s*[:：]?\s*(?:易|中|难|简单|中等|困难)\s*"),
+    re.compile(r"^第\s*\d{1,4}\s*题\s*"),
+)
+
+
+def strip_question_ui_prefix(text: str) -> tuple[str, bool]:
+    """Remove leading exam UI metadata without touching the raw OCR evidence."""
+    value = text.strip()
+    changed = False
+    while value:
+        previous = value
+        for pattern in _QUESTION_UI_PREFIX_PATTERNS:
+            value = pattern.sub("", value, count=1).strip()
+        if value == previous:
+            break
+        changed = True
+    return value, changed
+
 
 class _ParseState(Enum):
     SCANNING = auto()
@@ -46,6 +81,12 @@ class QuestionStructurer:
 
         for line in raw_text.splitlines():
             stripped = line.strip()
+            if not stripped:
+                continue
+
+            stripped, ui_noise_removed = strip_question_ui_prefix(stripped)
+            if ui_noise_removed:
+                warnings.append("ocr_exam_ui_noise_removed")
             if not stripped:
                 continue
 

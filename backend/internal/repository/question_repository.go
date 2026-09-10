@@ -86,6 +86,17 @@ func (r *QuestionRepository) GetByID(id int64) (*models.Question, error) {
 	return &question, nil
 }
 
+func (r *QuestionRepository) GetByIDForUser(id, userID int64) (*models.Question, error) {
+	var question models.Question
+	if err := r.db.Where("user_id = ?", userID).Preload("Options").Preload("Assets", "user_id = ?", userID).Preload("Tags").Preload("Category", "user_id = 0 OR user_id = ?", userID).First(&question, id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("get question by owner: %w", err)
+	}
+	return &question, nil
+}
+
 func (r *QuestionRepository) Update(question *models.Question) error {
 	if err := r.db.Omit("Options", "Assets", "Tags", "Category").Save(question).Error; err != nil {
 		return fmt.Errorf("update question: %w", err)
@@ -130,7 +141,13 @@ func (r *QuestionRepository) Delete(id int64) error {
 }
 
 func (r *QuestionRepository) List(filters QuestionListFilters) ([]models.Question, error) {
-	query := r.db.Model(&models.Question{}).Preload("Options").Preload("Assets").Preload("Tags").Preload("Category").Order("id desc")
+	query := r.db.Model(&models.Question{}).Preload("Options").Preload("Tags").Order("id desc")
+	if filters.UserID != nil {
+		userID := *filters.UserID
+		query = query.Where("questions.user_id = ?", userID).Preload("Assets", "user_id = ?", userID).Preload("Category", "user_id = 0 OR user_id = ?", userID)
+	} else {
+		query = query.Preload("Assets").Preload("Category")
+	}
 
 	if filters.Uncategorized {
 		query = query.Where("category_id IS NULL")
@@ -168,7 +185,13 @@ func (r *QuestionRepository) List(filters QuestionListFilters) ([]models.Questio
 	return questions, nil
 }
 
+func (r *QuestionRepository) ListForUser(filters QuestionListFilters, userID int64) ([]models.Question, error) {
+	filters.UserID = &userID
+	return r.List(filters)
+}
+
 type QuestionListFilters struct {
+	UserID         *int64
 	CategoryID     *int64
 	Uncategorized  bool
 	IsFavorited    *bool
@@ -180,16 +203,23 @@ type QuestionListFilters struct {
 }
 
 func (r *QuestionRepository) CountByCategory() (map[int64]int64, error) {
+	return r.CountByCategoryForUser(0)
+}
+
+func (r *QuestionRepository) CountByCategoryForUser(userID int64) (map[int64]int64, error) {
 	type row struct {
 		CategoryID int64
 		Count      int64
 	}
 	var rows []row
-	if err := r.db.Model(&models.Question{}).
+	query := r.db.Model(&models.Question{}).
 		Select("category_id, COUNT(*) as count").
 		Where("category_id IS NOT NULL").
-		Group("category_id").
-		Find(&rows).Error; err != nil {
+		Group("category_id")
+	if userID > 0 {
+		query = query.Where("user_id = ?", userID)
+	}
+	if err := query.Find(&rows).Error; err != nil {
 		return nil, fmt.Errorf("count by category: %w", err)
 	}
 	result := make(map[int64]int64, len(rows))
@@ -200,14 +230,37 @@ func (r *QuestionRepository) CountByCategory() (map[int64]int64, error) {
 }
 
 func (r *QuestionRepository) CountUncategorized() (int64, error) {
+	return r.CountUncategorizedForUser(0)
+}
+
+func (r *QuestionRepository) CountUncategorizedForUser(userID int64) (int64, error) {
 	var count int64
-	if err := r.db.Model(&models.Question{}).Where("category_id IS NULL").Count(&count).Error; err != nil {
+	query := r.db.Model(&models.Question{}).Where("category_id IS NULL")
+	if userID > 0 {
+		query = query.Where("user_id = ?", userID)
+	}
+	if err := query.Count(&count).Error; err != nil {
 		return 0, fmt.Errorf("count uncategorized: %w", err)
 	}
 	return count, nil
 }
 
-func (r *QuestionRepository) SetTags(questionID int64, tagIDs []int64) error {
+func (r *QuestionRepository) DeleteForUser(id, userID int64) error {
+	var question models.Question
+	if err := r.db.Where("id = ? AND user_id = ?", id, userID).First(&question).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil
+		}
+		return err
+	}
+	return r.Delete(id)
+}
+
+func (r *QuestionRepository) SetTags(questionID int64, tagIDs []int64, userIDs ...int64) error {
+	userID := int64(0)
+	if len(userIDs) > 0 {
+		userID = userIDs[0]
+	}
 	return r.db.Transaction(func(tx *gorm.DB) error {
 		uniqueTagIDs := make([]int64, 0, len(tagIDs))
 		seen := make(map[int64]struct{}, len(tagIDs))
@@ -222,8 +275,12 @@ func (r *QuestionRepository) SetTags(questionID int64, tagIDs []int64) error {
 			uniqueTagIDs = append(uniqueTagIDs, tagID)
 		}
 		if len(uniqueTagIDs) > 0 {
+			query := tx.Model(&models.Tag{}).Where("id IN ?", uniqueTagIDs)
+			if userID > 0 {
+				query = query.Where("user_id = 0 OR user_id = ?", userID)
+			}
 			var count int64
-			if err := tx.Model(&models.Tag{}).Where("id IN ?", uniqueTagIDs).Count(&count).Error; err != nil {
+			if err := query.Count(&count).Error; err != nil {
 				return fmt.Errorf("validate question tags: %w", err)
 			}
 			if count != int64(len(uniqueTagIDs)) {
@@ -244,11 +301,19 @@ func (r *QuestionRepository) SetTags(questionID int64, tagIDs []int64) error {
 
 // ApplyTaxonomy atomically validates and applies an existing top-level category
 // and existing tags. It never creates taxonomy rows from an AI suggestion.
-func (r *QuestionRepository) ApplyTaxonomy(questionID int64, categoryID *int64, tagIDs []int64) error {
+func (r *QuestionRepository) ApplyTaxonomy(questionID int64, categoryID *int64, tagIDs []int64, userIDs ...int64) error {
+	userID := int64(0)
+	if len(userIDs) > 0 {
+		userID = userIDs[0]
+	}
 	return r.db.Transaction(func(tx *gorm.DB) error {
 		if categoryID != nil {
 			var category models.Category
-			if err := tx.Where("id = ? AND parent_id IS NULL", *categoryID).First(&category).Error; err != nil {
+			categoryQuery := tx.Where("id = ? AND parent_id IS NULL", *categoryID)
+			if userID > 0 {
+				categoryQuery = categoryQuery.Where("user_id = 0 OR user_id = ?", userID)
+			}
+			if err := categoryQuery.First(&category).Error; err != nil {
 				if errors.Is(err, gorm.ErrRecordNotFound) {
 					return fmt.Errorf("category not found or not top-level")
 				}
@@ -268,15 +333,23 @@ func (r *QuestionRepository) ApplyTaxonomy(questionID int64, categoryID *int64, 
 			uniqueTagIDs = append(uniqueTagIDs, tagID)
 		}
 		if len(uniqueTagIDs) > 0 {
+			tagQuery := tx.Model(&models.Tag{}).Where("id IN ?", uniqueTagIDs)
+			if userID > 0 {
+				tagQuery = tagQuery.Where("user_id = 0 OR user_id = ?", userID)
+			}
 			var count int64
-			if err := tx.Model(&models.Tag{}).Where("id IN ?", uniqueTagIDs).Count(&count).Error; err != nil {
+			if err := tagQuery.Count(&count).Error; err != nil {
 				return fmt.Errorf("validate tags: %w", err)
 			}
 			if count != int64(len(uniqueTagIDs)) {
 				return ErrTagNotFound
 			}
 		}
-		if err := tx.Model(&models.Question{}).Where("id = ?", questionID).Update("category_id", categoryID).Error; err != nil {
+		questionQuery := tx.Model(&models.Question{}).Where("id = ?", questionID)
+		if userID > 0 {
+			questionQuery = questionQuery.Where("user_id = ?", userID)
+		}
+		if err := questionQuery.Update("category_id", categoryID).Error; err != nil {
 			return fmt.Errorf("apply category: %w", err)
 		}
 		if err := tx.Where("question_id = ?", questionID).Delete(&models.QuestionTag{}).Error; err != nil {
