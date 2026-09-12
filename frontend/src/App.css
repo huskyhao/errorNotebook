@@ -1371,6 +1371,46 @@ button {
   cursor: pointer;
 }
 
+.action-button,
+.confirm-dialog-button {
+  justify-content: center;
+  min-width: 116px;
+  height: 36px;
+  padding: 0 16px;
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1;
+  box-sizing: border-box;
+  text-decoration: none;
+}
+
+.confirm-dialog-button {
+  min-width: 96px;
+}
+
+.action-button.primary-button,
+.confirm-dialog-button.primary-button {
+  background: var(--color-primary-strong);
+  color: var(--color-primary-ink);
+}
+
+.action-button.outline-button,
+.confirm-dialog-button.outline-button {
+  background: var(--color-surface);
+  color: var(--color-text-secondary);
+}
+
+.action-button:hover,
+.confirm-dialog-button:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+.confirm-dialog-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
 .outline-button.is-highlight {
   border-color: var(--color-primary);
   color: var(--color-primary);
@@ -2910,9 +2950,16 @@ button {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  justify-content: flex-end;
   gap: 6px;
   flex-shrink: 0;
+}
+
+.archive-tag-row {
+  justify-content: flex-start;
+}
+
+.archive-item-flags {
+  justify-content: flex-end;
 }
 
 @media (max-width: 1440px) {

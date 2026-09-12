@@ -848,8 +848,8 @@ export default function PracticePage() {
             </div>
 
             <div className="results-actions">
-              <Link to="/" className="outline-button">返回工作台</Link>
-              <button className="primary-button" onClick={handleReset}>再来一次</button>
+              <Link to="/" className="action-button outline-button">返回工作台</Link>
+              <button className="action-button primary-button" onClick={handleReset}>再来一次</button>
             </div>
           </div>
         </div>

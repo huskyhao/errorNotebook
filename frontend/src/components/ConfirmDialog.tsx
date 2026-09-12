@@ -27,10 +27,10 @@ export default function ConfirmDialog({
         <h2 id="confirm-title" className="confirm-dialog-title">{title}</h2>
         <p className="confirm-dialog-msg">{description}</p>
         <div className="confirm-dialog-actions">
-          <button className="outline-button" type="button" onClick={onCancel} disabled={loading}>
+          <button className="confirm-dialog-button outline-button" type="button" onClick={onCancel} disabled={loading}>
             {cancelText}
           </button>
-          <button className={`primary-button${danger ? ' danger-button' : ''}`} type="button" onClick={onConfirm} disabled={loading}>
+          <button className={`confirm-dialog-button primary-button${danger ? ' danger-button' : ''}`} type="button" onClick={onConfirm} disabled={loading}>
             {loading ? '删除中...' : confirmText}
           </button>
         </div>

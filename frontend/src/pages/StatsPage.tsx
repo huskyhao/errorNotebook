@@ -167,8 +167,8 @@ export default function StatsPage() {
                   ) : null}
                 </div>
                 <div className="insight-actions">
-                  <Link className="primary-button" to="/practice">生成练习</Link>
-                  <Link className="outline-button" to="/archive">查看归档</Link>
+                  <Link className="action-button primary-button" to="/practice">生成练习</Link>
+                  <Link className="action-button outline-button" to="/archive">查看归档</Link>
                 </div>
               </section>
             </>
