@@ -4,7 +4,6 @@ import "time"
 
 type QuestionLearningState struct {
 	ID              int64      `gorm:"primaryKey" json:"id"`
-	UserID          int64      `gorm:"column:user_id;not null;default:1;index" json:"-"`
 	QuestionID      int64      `gorm:"column:question_id;not null;uniqueIndex" json:"questionId"`
 	Question        Question   `gorm:"foreignKey:QuestionID" json:"-"`
 	MasteryLevel    int        `gorm:"column:mastery_level;not null;default:0" json:"masteryLevel"`

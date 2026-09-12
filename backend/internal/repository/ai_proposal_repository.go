@@ -59,17 +59,6 @@ func (r *AIProposalRepository) Get(proposalID string) (*models.AIProposal, error
 	return &proposal, nil
 }
 
-func (r *AIProposalRepository) GetForUser(proposalID string, userID int64) (*models.AIProposal, error) {
-	var proposal models.AIProposal
-	if err := r.db.Where("proposal_id = ? AND user_id = ?", proposalID, userID).First(&proposal).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("get ai proposal by owner: %w", err)
-	}
-	return &proposal, nil
-}
-
 func (r *AIProposalRepository) Update(proposal *models.AIProposal) error {
 	if err := r.db.Save(proposal).Error; err != nil {
 		return fmt.Errorf("update ai proposal: %w", err)
@@ -86,11 +75,11 @@ func (r *AIProposalRepository) ExpireIfNeeded(proposal *models.AIProposal, now t
 	return false
 }
 
-func (r *AIProposalRepository) ConfirmSimilar(proposalID string, userID int64, sourceFingerprint string) (int64, error) {
+func (r *AIProposalRepository) ConfirmSimilar(proposalID string, sourceFingerprint string) (int64, error) {
 	var createdID int64
 	err := r.db.Transaction(func(tx *gorm.DB) error {
 		var proposal models.AIProposal
-		if err := tx.Where("proposal_id = ? AND user_id = ?", proposalID, userID).First(&proposal).Error; err != nil {
+		if err := tx.Where("proposal_id = ?", proposalID).First(&proposal).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return ErrAIProposalNotFound
 			}
@@ -143,7 +132,7 @@ func (r *AIProposalRepository) ConfirmSimilar(proposalID string, userID int64, s
 				}
 			}
 		}
-		q := models.Question{UserID: userID, Stem: content.Stem, QuestionType: content.QuestionType, SourceType: "ai_generated", OCRStatus: "completed", AnalysisStatus: "completed", ParseSource: "ai_proposal", CorrectAnswer: stringPtr(content.Answer)}
+		q := models.Question{Stem: content.Stem, QuestionType: content.QuestionType, SourceType: "ai_generated", OCRStatus: "completed", AnalysisStatus: "completed", ParseSource: "ai_proposal", CorrectAnswer: stringPtr(content.Answer)}
 		if err := tx.Create(&q).Error; err != nil {
 			return err
 		}
@@ -154,7 +143,6 @@ func (r *AIProposalRepository) ConfirmSimilar(proposalID string, userID int64, s
 		}
 		proposal.Status = "applied"
 		proposal.CreatedQuestionID = &q.ID
-		proposal.ConfirmedBy = &userID
 		now := time.Now()
 		proposal.ConfirmedAt = &now
 		if err := tx.Save(&proposal).Error; err != nil {
@@ -167,9 +155,9 @@ func (r *AIProposalRepository) ConfirmSimilar(proposalID string, userID int64, s
 	return createdID, err
 }
 
-func (r *AIProposalRepository) Reject(proposalID string, userID int64) error {
+func (r *AIProposalRepository) Reject(proposalID string) error {
 	var proposal models.AIProposal
-	if err := r.db.Where("proposal_id = ? AND user_id = ?", proposalID, userID).First(&proposal).Error; err != nil {
+	if err := r.db.Where("proposal_id = ?", proposalID).First(&proposal).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return ErrAIProposalNotFound
 		}
@@ -185,13 +173,10 @@ func (r *AIProposalRepository) Reject(proposalID string, userID int64) error {
 	return r.Update(&proposal)
 }
 
-func (r *AIProposalRepository) ConfirmGrade(proposalID string, sessionID int64, orderIndex int, sourceFingerprint string, scoreOverride *float64, feedbackOverride *string, confirmedBy ...int64) error {
+func (r *AIProposalRepository) ConfirmGrade(proposalID string, sessionID int64, orderIndex int, sourceFingerprint string, scoreOverride *float64, feedbackOverride *string) error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
 		var proposal models.AIProposal
 		proposalQuery := tx.Where("proposal_id = ?", proposalID)
-		if len(confirmedBy) > 0 {
-			proposalQuery = proposalQuery.Where("user_id = ?", confirmedBy[0])
-		}
 		if err := proposalQuery.First(&proposal).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return ErrAIProposalNotFound
@@ -251,9 +236,6 @@ func (r *AIProposalRepository) ConfirmGrade(proposalID string, sessionID int64, 
 		}
 		now := time.Now()
 		proposal.Status = "applied"
-		if len(confirmedBy) > 0 {
-			proposal.ConfirmedBy = &confirmedBy[0]
-		}
 		proposal.ConfirmedAt = &now
 		return tx.Save(&proposal).Error
 	})

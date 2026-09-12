@@ -4,10 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
-	"erro-notebook/backend/internal/auth"
 	"erro-notebook/backend/internal/services"
 	"erro-notebook/backend/pkg/response"
 	"github.com/gin-gonic/gin"
@@ -15,22 +13,6 @@ import (
 
 type PracticeHandler struct {
 	practiceService *services.PracticeService
-}
-
-func (h *PracticeHandler) accessMiddleware() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		part := strings.TrimPrefix(c.Request.URL.Path, "/api/v1/practice-sessions/")
-		id, err := strconv.ParseInt(strings.Split(part, "/")[0], 10, 64)
-		if err == nil && id > 0 {
-			userID, ok := auth.UserIDFromContext(c.Request.Context())
-			if !ok || h.practiceService.AuthorizeSession(userID, id) != nil {
-				response.Error(c, http.StatusNotFound, "SESSION_NOT_FOUND", "session not found")
-				c.Abort()
-				return
-			}
-		}
-		c.Next()
-	}
 }
 
 type gradeSuggestionRequest struct {
@@ -120,8 +102,7 @@ func (h *PracticeHandler) GetGradeSuggestion(c *gin.Context) {
 }
 
 func (h *PracticeHandler) GetPracticeRecommendations(c *gin.Context) {
-	userID, _ := auth.UserIDFromContext(c.Request.Context())
-	groups, err := h.practiceService.GetPracticeRecommendationsForUser(userID, time.Now())
+	groups, err := h.practiceService.GetPracticeRecommendations(time.Now())
 	if err != nil {
 		response.Error(c, http.StatusInternalServerError, "RECOMMENDATIONS_FAILED", err.Error())
 		return
@@ -145,8 +126,7 @@ func (h *PracticeHandler) CreateSession(c *gin.Context) {
 		return
 	}
 
-	userID, _ := auth.UserIDFromContext(c.Request.Context())
-	detail, err := h.practiceService.CreateSession(userID, services.CreateSessionInput{
+	detail, err := h.practiceService.CreateSession(services.CreateSessionInput{
 		Name:        req.Name,
 		QuestionIDs: req.QuestionIDs,
 	})
@@ -159,8 +139,7 @@ func (h *PracticeHandler) CreateSession(c *gin.Context) {
 }
 
 func (h *PracticeHandler) ListSessions(c *gin.Context) {
-	userID, _ := auth.UserIDFromContext(c.Request.Context())
-	sessions, err := h.practiceService.ListSessions(userID)
+	sessions, err := h.practiceService.ListSessions()
 	if err != nil {
 		response.Error(c, http.StatusInternalServerError, "SESSION_LIST_FAILED", err.Error())
 		return

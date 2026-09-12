@@ -1,6 +1,8 @@
 import React, { useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { UploadIcon, SettingsIcon, BellIcon } from './icons';
+import settingIcon from '../assets/icon/setting.svg';
+import notificationIcon from '../assets/icon/notification.svg';
+import { UploadIcon } from './icons';
 
 interface TopBarProps {
   onImport?: (files: File[]) => void;
@@ -45,7 +47,7 @@ export default function TopBar({ onImport, importing = false, importProgress }: 
             aria-label="设置"
             onClick={() => navigate('/settings')}
           >
-            <SettingsIcon />
+            <img src={settingIcon} alt="" aria-hidden="true" />
           </button>
           <button
             className="icon-button"
@@ -53,11 +55,8 @@ export default function TopBar({ onImport, importing = false, importProgress }: 
             aria-label="通知"
             onClick={() => console.log('[TopBar] 点击通知')}
           >
-            <BellIcon />
+            <img src={notificationIcon} alt="" aria-hidden="true" />
           </button>
-        </div>
-        <div className="avatar" aria-label="当前用户">
-          H
         </div>
       </div>
       {onImport ? (

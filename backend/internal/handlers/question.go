@@ -20,24 +20,6 @@ type QuestionHandler struct {
 	jobService      *services.JobService
 }
 
-// accessMiddleware protects every /questions/:id route, including nested
-// chat, analysis, proposal and learning-state endpoints. It deliberately
-// returns the same not-found result for another anonymous user's question.
-func (h *QuestionHandler) accessMiddleware() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		path := strings.TrimPrefix(c.Request.URL.Path, "/api/v1/questions/")
-		part := strings.Split(path, "/")[0]
-		if id, err := strconv.ParseInt(part, 10, 64); err == nil && id > 0 {
-			if err := h.questionService.AuthorizeQuestion(c.Request.Context(), id); err != nil {
-				response.Error(c, http.StatusNotFound, "QUESTION_NOT_FOUND", "question not found")
-				c.Abort()
-				return
-			}
-		}
-		c.Next()
-	}
-}
-
 func NewQuestionHandler(
 	questionService *services.QuestionService,
 	jobService *services.JobService,

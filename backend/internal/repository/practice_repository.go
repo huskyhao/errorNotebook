@@ -48,23 +48,9 @@ func (r *PracticeSessionRepository) GetByID(id int64) (*models.PracticeSession, 
 	return &session, nil
 }
 
-func (r *PracticeSessionRepository) GetByIDForUser(id, userID int64) (*models.PracticeSession, error) {
-	var session models.PracticeSession
-	if err := r.db.Where("user_id = ?", userID).
-		Preload("Questions", func(db *gorm.DB) *gorm.DB { return db.Order("order_index asc") }).
-		Preload("Questions.Question.Options").First(&session, id).Error; err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("get practice session by owner: %w", err)
-	}
-	return &session, nil
-}
-
-func (r *PracticeSessionRepository) ListByUserID(userID int64) ([]models.PracticeSession, error) {
+func (r *PracticeSessionRepository) List() ([]models.PracticeSession, error) {
 	var sessions []models.PracticeSession
 	if err := r.db.
-		Where("user_id = ?", userID).
 		Order("created_at desc").
 		Find(&sessions).Error; err != nil {
 		return nil, fmt.Errorf("list practice sessions: %w", err)

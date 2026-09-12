@@ -5,7 +5,6 @@ import "time"
 type Question struct {
 	// CategoryID is the single stable, top-level subject classification for a question.
 	ID                  int64            `gorm:"primaryKey" json:"id"`
-	UserID              int64            `gorm:"not null;default:1;index" json:"userId"`
 	CategoryID          *int64           `gorm:"index" json:"categoryId,omitempty"`
 	Category            *Category        `gorm:"foreignKey:CategoryID" json:"-"`
 	Stem                string           `gorm:"type:text;not null" json:"stem"`
@@ -48,7 +47,6 @@ func (QuestionOption) TableName() string {
 
 type QuestionAsset struct {
 	ID         int64  `gorm:"primaryKey" json:"id"`
-	UserID     int64  `gorm:"column:user_id;not null;default:1;index" json:"-"`
 	QuestionID int64  `gorm:"not null;index" json:"questionId"`
 	AssetType  string `gorm:"column:asset_type;type:varchar(64);not null" json:"assetType"`
 	FileURL    string `gorm:"column:file_url;type:varchar(1024);not null" json:"fileUrl"`

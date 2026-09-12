@@ -34,7 +34,7 @@ Python FastAPI ai-service :8001
 
 - `frontend/`：React + TypeScript 前端，只调用 Go 后端 API。
 - `backend/`：Go + Gin + GORM 业务后端，是前端唯一业务 API 入口，负责数据持久化、状态流转和 AI 服务编排。
-- `ai-service/`：Python + FastAPI 内部 AI 服务，负责 OCR、题目结构化、解析生成和追问生成，不直接承担用户体系或主业务数据库写入。
+- `ai-service/`：Python + FastAPI 内部 AI 服务，负责 OCR、题目结构化、解析生成和追问生成，不直接写入主业务数据库。
 
 ## 目录结构
 
@@ -186,7 +186,7 @@ npm test
 
 ## 当前限制
 
-- 当前没有完整鉴权体系，后端仍以固定业务用户或本地配置为主。
+- 当前为单实例本地系统，不包含注册、登录、账号、Cookie session 或多用户隔离。
 - PDF 导入、试卷拆题、批次校对和整卷作答不属于当前 MVP 主线。
 - 部分 AI 能力可通过 mock 跑通，真实 OCR/LLM 效果取决于本地环境变量和模型服务配置。
 - 客观题支持基础自动判分，主观题、简答题、论述题和计算题需要人工批改或后续 AI 扩展。

@@ -243,9 +243,9 @@ python run_tests.py
 
 这样可以先确认 AI 服务本身，再进入 Go 编排联调。
 
-## 与匿名会话和异步任务的边界（2026-09-10）
+## 与单实例 Go 后端和异步任务的边界
 
-ai-service 不接收或保存浏览器 Cookie、Session Token、用户表和业务数据库；Go 只把当前题目的结构化上下文、脱敏学习证据和图片字节传入。Python 返回 OCR/分析的结构化结果、warning 和统一错误，任务状态、重试、租约、用户归属与最终入库仍由 Go 控制。
+ai-service 不接收或保存浏览器 Cookie、Session Token、用户表和业务数据库；Go 只把当前题目的结构化上下文、学习证据和图片字节传入。Python 返回 OCR/分析的结构化结果、warning 和统一错误，任务状态、重试、租约与最终入库仍由 Go 控制。
 
 图片导入由 Go 异步编排：前端轮询 Go 的 `/api/v1/jobs/{jobId}` 和 `/api/v1/questions/{id}`，不会轮询本服务。OCR 题干不可用时由 Go 暂停，题干可用但置信度不足时可以继续分析并保留 warning。未配置真实 provider 时，结果只代表 mock/契约测试。
 

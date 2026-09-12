@@ -179,7 +179,7 @@ MVP 保留八类题型：`single_choice`、`multiple_choice`、`true_false`、`f
 
 前端详情区明确显示“学科分类（单选）”与“知识点标签（可多选）”。人工可以随时修改；标签接口整体替换该题标签关联，并由 Go 去重、校验 ID 后持久化。分类删除不会删除题目，题目会移动到未分类；`全部题目` 和 `未分类` 属于系统视图。
 
-taxonomy 采用系统词表与用户私有词表并存：系统预置 `数据结构`、`计算机组成原理`、`操作系统`、`计算机网络` 四个 408 顶层分类，匿名用户也可以新建、修改和删除自己的分类/标签，系统项只读。AI 只返回可选的 `taxonomySuggestion`（`categoryName`、`tagNames`、可选 `confidence`）：category 只能从大类学科候选中选择，每题最多 3 个细知识点 tag，可复用已有项或提出新项。Go 将新 tag 创建为当前匿名用户私有数据，校验后在题目分析完成时自动应用；用户不需要确认，发现问题后可在右侧手动调整。本轮不把知识点升级为分类。
+taxonomy 采用当前实例统一词表：系统预置 `数据结构`、`计算机组成原理`、`操作系统`、`计算机网络` 四个 408 顶层分类，单实例用户可以新建、修改和删除分类/标签。AI 只返回可选的 `taxonomySuggestion`（`categoryName`、`tagNames`、可选 `confidence`）：category 只能从大类学科候选中选择，每题最多 3 个细知识点 tag，可复用已有项或提出新项。Go 将新 tag 写入当前实例词表，校验后在题目分析完成时自动应用；用户不需要确认，发现问题后可在右侧手动调整。本轮不把知识点升级为分类。
 
 ## 5.5 AI 解析
 
@@ -245,7 +245,6 @@ AI 解析建议输出为结构化片段，而不是一整段纯文本。最少�
 
 ## 一级对象
 
-* 用户 User
 * 题目 Question
 * 题目资源 QuestionAsset
 * 用户作答 UserAnswer
@@ -791,21 +790,11 @@ Python 只负责产生这段结果；Go 负责将其纳入解析记录、校验�
 
 # 12. 数据模型建议
 
-## 12.1 users
-
-| 字段 | 类型 | 说明 |
-| --- | --- | --- |
-| id | bigint | 主键 |
-| username | varchar | 登录名 |
-| password_hash | varchar | 密码哈希 |
-| created_at | timestamp | 创建时间 |
-
 ## 12.2 categories
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | id | bigint | 主键 |
-| user_id | bigint | 所属用户 |
 | name | varchar | 分类名 |
 | parent_id | bigint nullable | 历史兼容字段；当前新建/更新必须为 null，分类表示顶层学科 |
 | created_at | timestamp | 创建时间 |
@@ -815,7 +804,6 @@ Python 只负责产生这段结果；Go 负责将其纳入解析记录、校验�
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | id | bigint | 主键 |
-| user_id | bigint | 所属用户 |
 | category_id | bigint nullable | 主分类 |
 | stem | text | 题干 |
 | question_type | varchar | 题型 |
@@ -1307,10 +1295,8 @@ func (c *Client) ParseQuestionImage(
 
 ## 安全性
 
-* 密码必须哈希存储
 * 文件上传需要类型和大小校验
-* 对话与题目访问必须做用户隔离
-* Python 内部接口应限制在内网或网关后
+* Go 作为唯一业务入口，Python 内部接口应限制在内网或网关后
 
 ---
 
@@ -1318,7 +1304,7 @@ func (c *Client) ParseQuestionImage(
 
 ## P0
 
-* 登录态或最小单用户模式
+* 单实例数据模型与本地部署
 * 上传图片
 * Go 调 Python OCR
 * 题目详情展示与作答
@@ -1367,14 +1353,14 @@ P0 的 Go 对外接入包括中栏动作代理和分类建议确认应用；Pyth
 
 这套方案足够工程化，同时又不会因为过早引入复杂分布式设计而拖慢 MVP 落地。
 
-# 20. 匿名用户隔离与图片导入异步基线（2026-09-10）
+# 20. 单实例数据模型与图片导入异步基线
 
-本轮将“无需注册即可完成单题闭环”落为实现约束：Go 首次 API 访问创建匿名 `User` 与 `UserSession`，使用签名 HttpOnly、SameSite=Lax 的 `erro_session` Cookie。前端请求必须携带 credentials；服务端不信任任何传入的 `userId`。未注册数据只绑定当前浏览器，清除 Cookie 或更换设备后无法恢复，本轮不实现邮箱、密码、OAuth 或跨设备升级。
+本轮将“单实例直接完成单题闭环”落为实现约束：Go 不创建用户、账号、登录态、Cookie 或浏览器 session，前端请求无需 credentials 和 userId。当前部署的 MySQL 与本地对象存储就是唯一数据空间；需要隔离数据时使用不同部署实例。
 
-Question 是数据归属根。QuestionAsset、Analysis、Job、ChatMessage、BatchImport、PracticeSession、PracticeSessionQuestion、QuestionLearningState、AIProposal 增加/使用用户作用域；详情、列表、写入、删除、聊天、proposal、练习和推荐统一按当前会话校验，越权按 404 处理。对象存储 key 使用 `users/{userId}/questions/{questionId}/...`。Category/Tag 采用系统词表与用户私有词表并存策略，匿名用户可管理自己的 taxonomy，系统项只读；AI taxonomy 在无人工选择时默认应用。
+Question 是业务组织中心。QuestionAsset、Analysis、Job、ChatMessage、BatchImport、PracticeSession、PracticeSessionQuestion、QuestionLearningState、AIProposal 都直接属于当前实例；对象存储 key 使用 `questions/{questionId}/...`。Category/Tag 是实例统一词表，AI taxonomy 在无人工选择时默认应用。
 
 图片导入接口立即返回 `jobId`、`questionId` 和 `queued` 占位状态。Go worker 维护 `queued`、`processing`、`completed`、`needs_review`、`failed`，并通过 `processingStage` 区分 OCR 与 AI 分析；前端使用可取消、按任务去重、1.2 秒起步并带网络退避的轮询，最长等待 5 分钟。OCR 完成即刷新题干/题型/选项，AI 完成即刷新解析、taxonomy 建议和对话；解析未生成时显示“解析中”。切题、重复上传和卸载组件会取消旧轮询。旧数据库 `pending` Job 仍兼容接管。
 
 图片分析优先使用 Go 转发的原图调用视觉 provider；视觉 provider 暂时不可达时，Python 在文本 provider 可用的前提下基于 OCR 结果降级解析并标记 `multimodal_fallback_to_ocr`，两者都不可用则明确失败并由 Go 重试，禁止把 mock 摘要伪装成真实结果。
 
-未来账号升级只需将匿名 UserSession 迁移到正式身份，不改变业务表归属模型；本轮不实现 UserSkillProfile、向量库、知识图谱或 LangGraph。
+本轮不引入账号体系、用户迁移、UserSkillProfile、向量库、知识图谱或 LangGraph。

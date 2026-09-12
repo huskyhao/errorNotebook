@@ -25,19 +25,19 @@ func TestValidateImageFile(t *testing.T) {
 	}
 }
 
-func TestCategoryNamesForAIKeepsBroadSubjectsAndCurrentUserCustomCategories(t *testing.T) {
+func TestCategoryNamesForAIKeepsBroadSubjects(t *testing.T) {
 	parentID := int64(9)
 	categories := []models.Category{
-		{ID: 1, UserID: 0, Name: "数据结构"},
-		{ID: 2, UserID: 0, Name: "图论"},
-		{ID: 3, UserID: 0, Name: "操作系统"},
-		{ID: 4, UserID: 42, Name: "数据库系统"},
-		{ID: 5, UserID: 77, Name: "编译原理"},
-		{ID: 6, UserID: 42, Name: "进程调度", ParentID: &parentID},
+		{ID: 1, Name: "数据结构"},
+		{ID: 2, Name: "图论"},
+		{ID: 3, Name: "操作系统"},
+		{ID: 4, Name: "数据库系统"},
+		{ID: 5, Name: "编译原理"},
+		{ID: 6, Name: "进程调度", ParentID: &parentID},
 	}
 
-	got := categoryNamesForAI(categories, 42)
-	want := []string{"数据结构", "操作系统", "数据库系统"}
+	got := categoryNamesForAI(categories)
+	want := []string{"数据结构", "图论", "操作系统", "数据库系统", "编译原理"}
 	if len(got) != len(want) {
 		t.Fatalf("categoryNamesForAI() = %#v, want %#v", got, want)
 	}

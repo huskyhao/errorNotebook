@@ -43,17 +43,6 @@ func (r *JobRepository) GetByJobID(jobID string) (*models.Job, error) {
 	return &job, nil
 }
 
-func (r *JobRepository) GetByJobIDForUser(jobID string, userID int64) (*models.Job, error) {
-	var job models.Job
-	if err := r.db.Where("job_id = ? AND user_id = ?", jobID, userID).First(&job).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("get job by owner: %w", err)
-	}
-	return &job, nil
-}
-
 func (r *JobRepository) GetLatestByQuestionIDAndType(questionID int64, jobType string) (*models.Job, error) {
 	var job models.Job
 	if err := r.db.Where("question_id = ? AND job_type = ?", questionID, jobType).

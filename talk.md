@@ -1062,3 +1062,24 @@ LangGraph 是 LangChain 体系中的低层 Agent 编排框架和运行时，核�
 - 本轮不实现邮箱注册、密码、OAuth、正式账号升级、UserSkillProfile、向量库、知识图谱或 LangGraph。
 - 本轮不引入 WebSocket；轮询最长 5 分钟，网络连续失败会提示后台任务仍在处理。
 - 未来账号升级只迁移匿名 UserSession，不改变 Question 及其关联实体的 owner 模型。
+# 2026-09-13 单用户单实例化：移除注册、登录与用户 Session
+
+## 本轮决策
+
+- 项目正式按单实例本地系统实现，不再保留注册、登录、账号、OAuth、匿名 Cookie、浏览器 session 或多用户数据隔离。
+- 保留“练习会话”作为业务对象；它不是用户身份 session。
+- Go 不再创建/校验 `User`、`UserSession`，不再提供 `/api/v1/session`，前端请求不再携带 `credentials`。
+- 业务模型和仓储层移除运行时 `user_id` 归属及 `ForUser` 查询；题目、解析、聊天、练习、学习状态、分类和标签直接属于当前部署实例。
+- 图片对象 key 统一为 `questions/{questionId}/...`。
+
+## 已完成
+
+- 删除 Go auth/session 实现与用户模型，移除 session 配置项和 Cookie CORS 配置。
+- 移除前端匿名提示、`/session` 请求、用户头像语义和 `credentials: include`。
+- 将仓储、服务、worker、taxonomy、proposal 和练习链路改为无用户过滤的单实例访问。
+- 同步 `README.md`、`backend/README.md`、`backend/API.md`、`project.md`、`webdesign.md`、`ai-service/README.md` 与 `.env.example`。
+- Go 与前端测试已通过；后续需要在已有 MySQL 数据库上验证旧表/旧索引迁移，并确认旧上传文件是否需要一次性从 `users/{userId}/...` 移到新路径。
+
+## 当前边界
+
+如果未来需要多人共享或账号恢复，应另行设计租户/账号体系；本阶段不通过隐藏 Cookie 或固定 owner 继续保留身份概念。

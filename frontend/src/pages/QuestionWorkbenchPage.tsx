@@ -70,7 +70,6 @@ export default function QuestionWorkbenchPage() {
   const [agentActionPending, setAgentActionPending] = useState(false);
   const [activeProposalId, setActiveProposalId] = useState<string | null>(null);
   const [error, setError] = useState('');
-  const [anonymousNotice, setAnonymousNotice] = useState('');
   const [deletingId, setDeletingId] = useState<number | null>(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState<number | null>(null);
   const [categoryDeleteTarget, setCategoryDeleteTarget] = useState<CategoryTreeNode | null>(null);
@@ -254,7 +253,6 @@ export default function QuestionWorkbenchPage() {
   }
 
   useEffect(() => {
-    requestJson<{ kind: string; notice: string }>('/session').then((session) => setAnonymousNotice(session.notice)).catch(() => null);
     loadQuestions().catch(() => null);
     loadTaxonomy();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -900,7 +898,6 @@ export default function QuestionWorkbenchPage() {
       {saving ? <div className="global-toast">正在保存...</div> : null}
       {reanalyzing ? <div className="global-toast">正在解析...</div> : null}
       {error ? <div className="global-toast is-error">{error}</div> : null}
-      {anonymousNotice ? <div className="global-toast">{anonymousNotice}</div> : null}
       {categoryDeleteTarget ? (
         <ConfirmDialog
           title="删除分类"

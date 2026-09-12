@@ -16,7 +16,6 @@ import (
 	"strings"
 	"time"
 
-	"erro-notebook/backend/internal/auth"
 	"erro-notebook/backend/internal/integrations/ai"
 	"erro-notebook/backend/internal/models"
 	"erro-notebook/backend/internal/repository"
@@ -29,13 +28,6 @@ var ErrAIUnavailable = errors.New("ai service unavailable")
 var ErrTaxonomySuggestionUnavailable = errors.New("taxonomy suggestion unavailable or has no applicable candidates")
 var ErrProposalNotFound = errors.New("ai proposal not found")
 var ErrProposalConflict = errors.New("ai proposal is not applicable")
-
-var coreSubjectCategoryNames = map[string]struct{}{
-	"数据结构":    {},
-	"计算机组成原理": {},
-	"操作系统":    {},
-	"计算机网络":   {},
-}
 
 type QuestionService struct {
 	questionRepo  *repository.QuestionRepository
@@ -52,37 +44,18 @@ type QuestionService struct {
 	proposalRepo  *repository.AIProposalRepository
 }
 
-func currentUserID(ctx context.Context) int64 {
-	userID, _ := auth.UserIDFromContext(ctx)
-	return userID
-}
-
 func (s *QuestionService) listCategories(ctx context.Context) ([]models.Category, error) {
-	if userID := currentUserID(ctx); userID > 0 {
-		return s.categoryRepo.ListForUser(userID)
-	}
 	return s.categoryRepo.List()
 }
 
 func (s *QuestionService) listTags(ctx context.Context) ([]models.Tag, error) {
-	if userID := currentUserID(ctx); userID > 0 {
-		return s.tagRepo.ListForUser(userID)
-	}
 	return s.tagRepo.List()
 }
 
-// AuthorizeQuestion is used by the HTTP boundary before every question
-// operation. Returning not-found for another user's question avoids resource
-// existence leaks.
+// AuthorizeQuestion is retained as a simple existence check for callers that
+// want an early not-found response before operating on a question.
 func (s *QuestionService) AuthorizeQuestion(ctx context.Context, id int64) error {
-	userID := currentUserID(ctx)
-	var question *models.Question
-	var err error
-	if userID > 0 {
-		question, err = s.questionRepo.GetByIDForUser(id, userID)
-	} else {
-		question, err = s.questionRepo.GetByID(id)
-	}
+	question, err := s.questionRepo.GetByID(id)
 	if err != nil {
 		return err
 	}
@@ -245,8 +218,7 @@ func (s *QuestionService) BatchImportQuestions(ctx context.Context, input BatchI
 		}
 	}
 
-	userID := currentUserID(ctx)
-	batch := &models.BatchImport{UserID: userID, TotalFiles: len(input.Files)}
+	batch := &models.BatchImport{TotalFiles: len(input.Files)}
 	if err := s.batchRepo.CreateBatch(batch); err != nil {
 		return nil, err
 	}
@@ -254,7 +226,6 @@ func (s *QuestionService) BatchImportQuestions(ctx context.Context, input BatchI
 	items := make([]models.BatchImportItem, len(input.Files))
 	for i, fh := range input.Files {
 		question := &models.Question{
-			UserID:         userID,
 			Stem:           "",
 			QuestionType:   "subjective",
 			OCRStatus:      "queued",
@@ -278,14 +249,13 @@ func (s *QuestionService) BatchImportQuestions(ctx context.Context, input BatchI
 			return nil, err
 		}
 		job := &models.Job{
-			UserID: userID, JobID: newJobID("ocr"), QuestionID: question.ID, JobType: "ocr",
+			JobID: newJobID("ocr"), QuestionID: question.ID, JobType: "ocr",
 			Status: "queued", MaxAttempts: 3, ProcessingStage: "queued",
 		}
 		if err := s.jobRepo.Create(job); err != nil {
 			return nil, err
 		}
 		items[i] = models.BatchImportItem{
-			UserID:          userID,
 			BatchID:         batch.ID,
 			QuestionID:      question.ID,
 			JobID:           job.JobID,
@@ -331,8 +301,8 @@ func (s *QuestionService) failBatchItem(item *models.BatchImportItem, stage stri
 	_ = s.batchRepo.UpdateItem(item)
 }
 
-func (s *QuestionService) markQuestionOCRFailedForUser(questionID, userID int64) {
-	question, err := s.questionRepo.GetByIDForUser(questionID, userID)
+func (s *QuestionService) markQuestionOCRFailed(questionID int64) {
+	question, err := s.questionRepo.GetByID(questionID)
 	if err != nil || question == nil {
 		return
 	}
@@ -341,14 +311,7 @@ func (s *QuestionService) markQuestionOCRFailedForUser(questionID, userID int64)
 }
 
 func (s *QuestionService) GetBatchImport(ctx context.Context, batchID int64) (*BatchImportResult, error) {
-	userID := currentUserID(ctx)
-	var batch *models.BatchImport
-	var err error
-	if userID > 0 {
-		batch, err = s.batchRepo.GetBatchByIDForUser(batchID, userID)
-	} else {
-		batch, err = s.batchRepo.GetBatchByID(batchID)
-	}
+	batch, err := s.batchRepo.GetBatchByID(batchID)
 	if err != nil {
 		return nil, err
 	}
@@ -414,7 +377,6 @@ func (s *QuestionService) ImportQuestion(ctx context.Context, input ImportQuesti
 	}
 
 	question := &models.Question{
-		UserID:         currentUserID(ctx),
 		Stem:           strings.TrimSpace(input.RawText),
 		QuestionType:   "subjective",
 		OCRStatus:      "queued",
@@ -444,7 +406,7 @@ func (s *QuestionService) ImportQuestion(ctx context.Context, input ImportQuesti
 		return nil, err
 	}
 	job := &models.Job{
-		UserID: currentUserID(ctx), JobID: newJobID("ocr"), QuestionID: question.ID, JobType: "ocr",
+		JobID: newJobID("ocr"), QuestionID: question.ID, JobType: "ocr",
 		Status: "queued", MaxAttempts: 3, ProcessingStage: "queued",
 	}
 	if err := s.jobRepo.Create(job); err != nil {
@@ -471,8 +433,7 @@ func (s *QuestionService) storeUploadedImage(ctx context.Context, questionID int
 	if ext == "" {
 		ext = ".bin"
 	}
-	userID := currentUserID(ctx)
-	key := filepath.ToSlash(filepath.Join("users", fmt.Sprintf("%d", userID), "questions", fmt.Sprintf("%d", questionID), "original"+ext))
+	key := filepath.ToSlash(filepath.Join("questions", fmt.Sprintf("%d", questionID), "original"+ext))
 	if err := s.objectStorage.Put(ctx, key, file); err != nil {
 		return "", err
 	}
@@ -500,13 +461,7 @@ func validateImageFile(fileHeader *multipart.FileHeader) error {
 }
 
 func (s *QuestionService) GetQuestion(ctx context.Context, id int64) (*QuestionDetail, error) {
-	var question *models.Question
-	var err error
-	if userID := currentUserID(ctx); userID > 0 {
-		question, err = s.questionRepo.GetByIDForUser(id, userID)
-	} else {
-		question, err = s.questionRepo.GetByID(id)
-	}
+	question, err := s.questionRepo.GetByID(id)
 	if err != nil {
 		return nil, err
 	}
@@ -515,27 +470,20 @@ func (s *QuestionService) GetQuestion(ctx context.Context, id int64) (*QuestionD
 	}
 
 	detail := toQuestionDetail(question)
-	s.attachLearningState(detail, currentUserID(ctx))
+	s.attachLearningState(detail)
 	return detail, nil
 }
 
 func (s *QuestionService) ListQuestions(ctx context.Context, filters repository.QuestionListFilters) ([]QuestionDetail, error) {
-	var questions []models.Question
-	var err error
-	if userID := currentUserID(ctx); userID > 0 {
-		questions, err = s.questionRepo.ListForUser(filters, userID)
-	} else {
-		questions, err = s.questionRepo.List(filters)
-	}
+	questions, err := s.questionRepo.List(filters)
 	if err != nil {
 		return nil, err
 	}
 
 	result := make([]QuestionDetail, 0, len(questions))
-	userID := currentUserID(ctx)
 	for i := range questions {
 		detail := toQuestionDetail(&questions[i])
-		s.attachLearningState(detail, userID)
+		s.attachLearningState(detail)
 		result = append(result, *detail)
 	}
 	return result, nil
@@ -568,7 +516,7 @@ func (s *QuestionService) UpdateQuestion(ctx context.Context, id int64, input Up
 	if categoryWasChanged {
 		if input.CategoryID != nil {
 			if s.categoryRepo != nil {
-				category, categoryErr := s.categoryRepo.GetByIDForUser(*input.CategoryID, currentUserID(ctx))
+				category, categoryErr := s.categoryRepo.GetByID(*input.CategoryID)
 				if categoryErr != nil {
 					return nil, categoryErr
 				}
@@ -652,7 +600,7 @@ func (s *QuestionService) SetQuestionTags(ctx context.Context, questionID int64,
 	if question == nil {
 		return nil, ErrQuestionNotFound
 	}
-	if err := s.questionRepo.SetTags(questionID, tagIDs, currentUserID(ctx)); err != nil {
+	if err := s.questionRepo.SetTags(questionID, tagIDs); err != nil {
 		return nil, err
 	}
 	return s.GetQuestion(ctx, questionID)
@@ -691,7 +639,7 @@ func (s *QuestionService) AnalyzeQuestion(ctx context.Context, id int64) (*Analy
 	}
 
 	job := &models.Job{
-		UserID: currentUserID(ctx), JobID: newJobID("analyze"), QuestionID: id, JobType: "analyze",
+		JobID: newJobID("analyze"), QuestionID: id, JobType: "analyze",
 		Status: "queued", MaxAttempts: 3, ProcessingStage: "queued",
 	}
 	if err := s.jobRepo.Create(job); err != nil {
@@ -740,8 +688,8 @@ func (s *QuestionService) RetryOCR(ctx context.Context, id int64) (*AnalyzeQuest
 	return &AnalyzeQuestionResult{JobID: job.JobID, QuestionID: id, Status: "queued"}, nil
 }
 
-func (s *QuestionService) failQuestionForUser(questionID, userID int64) {
-	question, err := s.questionRepo.GetByIDForUser(questionID, userID)
+func (s *QuestionService) failQuestion(questionID int64) {
+	question, err := s.questionRepo.GetByID(questionID)
 	if err != nil || question == nil {
 		return
 	}
@@ -796,7 +744,7 @@ func (s *QuestionService) GetLearningState(ctx context.Context, questionID int64
 	if s.learningRepo == nil {
 		return nil, fmt.Errorf("learning state repository unavailable")
 	}
-	state, err := s.learningRepo.EnsureForUser(questionID, currentUserID(ctx))
+	state, err := s.learningRepo.Ensure(questionID)
 	if err != nil {
 		return nil, err
 	}
@@ -811,7 +759,7 @@ func (s *QuestionService) UpdateLearningState(ctx context.Context, questionID in
 	if question == nil {
 		return nil, ErrQuestionNotFound
 	}
-	state, err := s.learningRepo.EnsureForUser(questionID, currentUserID(ctx))
+	state, err := s.learningRepo.Ensure(questionID)
 	if err != nil {
 		return nil, err
 	}
@@ -842,7 +790,7 @@ func (s *QuestionService) GenerateLearningState(ctx context.Context, questionID 
 	if question == nil {
 		return nil, ErrQuestionNotFound
 	}
-	state, err := s.learningRepo.EnsureForUser(questionID, currentUserID(ctx))
+	state, err := s.learningRepo.Ensure(questionID)
 	if err != nil {
 		return nil, err
 	}
@@ -869,7 +817,7 @@ func (s *QuestionService) GenerateLearningState(ctx context.Context, questionID 
 			Warnings:        parseWarnings(question.StructureWarnings),
 			ReferenceAnswer: derefString(question.CorrectAnswer), ReferenceAnswerSource: "question.correctAnswer",
 			LatestAnswer: derefString(question.UserAnswer), Analysis: analysisPayload,
-			Conversation: toAIConversation(conversation), CategoryCandidates: categoryNamesForAI(categoryCandidates, currentUserID(ctx)),
+			Conversation: toAIConversation(conversation), CategoryCandidates: categoryNamesForAI(categoryCandidates),
 			TagCandidates: tagNames(tagCandidates), ContentFingerprint: fingerprint, Version: fingerprint,
 		}, Params: map[string]any{},
 	})
@@ -930,14 +878,14 @@ func (s *QuestionService) ApplyTaxonomySuggestion(ctx context.Context, questionI
 	if err := json.Unmarshal([]byte(analysis.ContentJSON), &payload); err != nil || payload.TaxonomySuggestion == nil {
 		return nil, ErrTaxonomySuggestionUnavailable
 	}
-	suggestion := s.validateTaxonomySuggestion(payload.TaxonomySuggestion, currentUserID(ctx))
+	suggestion := s.validateTaxonomySuggestion(payload.TaxonomySuggestion)
 	if suggestion == nil || suggestion.CategoryID == nil && len(suggestion.TagIDs) == 0 {
 		return nil, ErrTaxonomySuggestionUnavailable
 	}
 	if suggestion.UnresolvedCategory || len(suggestion.UnresolvedTagNames) > 0 {
 		return nil, fmt.Errorf("%w: one or more suggested taxonomy candidates no longer exist", ErrProposalConflict)
 	}
-	if err := s.questionRepo.ApplyTaxonomy(questionID, suggestion.CategoryID, suggestion.TagIDs, currentUserID(ctx)); err != nil {
+	if err := s.questionRepo.ApplyTaxonomy(questionID, suggestion.CategoryID, suggestion.TagIDs); err != nil {
 		return nil, err
 	}
 	return s.GetQuestion(ctx, questionID)
@@ -975,7 +923,7 @@ func (s *QuestionService) RunAgentAction(ctx context.Context, questionID int64, 
 			Question: toAIStructuredQuestion(question, parseWarnings(question.StructureWarnings)),
 			Warnings: parseWarnings(question.StructureWarnings), ReferenceAnswer: derefString(question.CorrectAnswer),
 			ReferenceAnswerSource: "question.correctAnswer", LatestAnswer: derefString(question.UserAnswer),
-			Analysis: analysisPayload, Conversation: toAIConversation(messages), CategoryCandidates: categoryNamesForAI(categories, currentUserID(ctx)),
+			Analysis: analysisPayload, Conversation: toAIConversation(messages), CategoryCandidates: categoryNamesForAI(categories),
 			TagCandidates: tagNames(tags), ContentFingerprint: fingerprint, Version: fingerprint,
 		}, Params: params,
 	})
@@ -991,9 +939,8 @@ func (s *QuestionService) RunAgentAction(ctx context.Context, questionID int64, 
 		if proposalID == "" {
 			proposalID = fmt.Sprintf("proposal_%d_%d", questionID, time.Now().UnixNano())
 		}
-		userID := currentUserID(ctx)
-		key := fmt.Sprintf("%d:%d:%s:%s", userID, questionID, action, fingerprint)
-		proposal, saveErr := s.proposalRepo.CreateOrGet(&models.AIProposal{ProposalID: proposalID, UserID: userID, QuestionID: questionID, Action: action, Status: "pending", ContentJSON: string(resp.Result), SourceFingerprint: fingerprint, IdempotencyKey: key, ExpiresAt: time.Now().Add(24 * time.Hour)})
+		key := fmt.Sprintf("%d:%s:%s", questionID, action, fingerprint)
+		proposal, saveErr := s.proposalRepo.CreateOrGet(&models.AIProposal{ProposalID: proposalID, QuestionID: questionID, Action: action, Status: "pending", ContentJSON: string(resp.Result), SourceFingerprint: fingerprint, IdempotencyKey: key, ExpiresAt: time.Now().Add(24 * time.Hour)})
 		if saveErr != nil {
 			return nil, saveErr
 		}
@@ -1020,13 +967,7 @@ func (s *QuestionService) ConfirmSimilarQuestion(ctx context.Context, questionID
 	if s.proposalRepo == nil {
 		return nil, ErrProposalNotFound
 	}
-	var proposal *models.AIProposal
-	var err error
-	if userID := currentUserID(ctx); userID > 0 {
-		proposal, err = s.proposalRepo.GetForUser(proposalID, userID)
-	} else {
-		proposal, err = s.proposalRepo.Get(proposalID)
-	}
+	proposal, err := s.proposalRepo.Get(proposalID)
 	if err != nil {
 		return nil, err
 	}
@@ -1041,7 +982,7 @@ func (s *QuestionService) ConfirmSimilarQuestion(ctx context.Context, questionID
 		return nil, ErrQuestionNotFound
 	}
 	fingerprint := questionContentFingerprint(question)
-	createdID, err := s.proposalRepo.ConfirmSimilar(proposalID, currentUserID(ctx), fingerprint)
+	createdID, err := s.proposalRepo.ConfirmSimilar(proposalID, fingerprint)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrProposalConflict, err)
 	}
@@ -1060,13 +1001,7 @@ func (s *QuestionService) RejectAIProposal(ctx context.Context, proposalID strin
 		return ErrProposalNotFound
 	}
 	if len(questionIDs) > 0 {
-		var proposal *models.AIProposal
-		var err error
-		if userID := currentUserID(ctx); userID > 0 {
-			proposal, err = s.proposalRepo.GetForUser(proposalID, userID)
-		} else {
-			proposal, err = s.proposalRepo.Get(proposalID)
-		}
+		proposal, err := s.proposalRepo.Get(proposalID)
 		if err != nil {
 			return err
 		}
@@ -1074,7 +1009,7 @@ func (s *QuestionService) RejectAIProposal(ctx context.Context, proposalID strin
 			return ErrProposalConflict
 		}
 	}
-	return s.proposalRepo.Reject(proposalID, currentUserID(ctx))
+	return s.proposalRepo.Reject(proposalID)
 }
 
 func (s *QuestionService) CreateChatMessage(ctx context.Context, questionID int64, input CreateChatMessageInput) ([]models.ChatMessage, error) {
@@ -1127,7 +1062,7 @@ func (s *QuestionService) CreateChatMessage(ctx context.Context, questionID int6
 
 	userMessage := existing
 	if userMessage == nil {
-		userMessage = &models.ChatMessage{UserID: currentUserID(ctx), QuestionID: questionID, Role: "user", Message: messageText, AttachmentJSON: attachmentJSON}
+		userMessage = &models.ChatMessage{QuestionID: questionID, Role: "user", Message: messageText, AttachmentJSON: attachmentJSON}
 		if strings.TrimSpace(input.IdempotencyKey) != "" {
 			key := strings.TrimSpace(input.IdempotencyKey)
 			userMessage.IdempotencyKey = &key
@@ -1194,7 +1129,6 @@ func (s *QuestionService) CreateChatMessage(ctx context.Context, questionID int6
 	replyText = resp.Reply
 
 	assistantMessage := &models.ChatMessage{
-		UserID:     currentUserID(ctx),
 		QuestionID: questionID,
 		Role:       "assistant",
 		Message:    replyText,
@@ -1233,7 +1167,7 @@ func (s *QuestionService) saveChatAttachments(ctx context.Context, questionID in
 		}
 
 		filename := fmt.Sprintf("%d_%d%s", time.Now().UnixNano(), idx, strings.ToLower(filepath.Ext(fh.Filename)))
-		objectKey := filepath.ToSlash(filepath.Join("users", fmt.Sprintf("%d", currentUserID(ctx)), "questions", fmt.Sprintf("%d", questionID), "chat", filename))
+		objectKey := filepath.ToSlash(filepath.Join("questions", fmt.Sprintf("%d", questionID), "chat", filename))
 		if err := s.objectStorage.Put(ctx, objectKey, bytes.NewReader(data)); err != nil {
 			return nil, fmt.Errorf("save chat attachment: %w", err)
 		}
@@ -1389,17 +1323,11 @@ func toQuestionDetail(question *models.Question) *QuestionDetail {
 	}
 }
 
-func (s *QuestionService) attachLearningState(detail *QuestionDetail, userID int64) {
+func (s *QuestionService) attachLearningState(detail *QuestionDetail) {
 	if s.learningRepo == nil || detail == nil {
 		return
 	}
-	var state *models.QuestionLearningState
-	var err error
-	if userID > 0 {
-		state, err = s.learningRepo.GetByQuestionIDForUser(detail.ID, userID)
-	} else {
-		state, err = s.learningRepo.GetByQuestionID(detail.ID)
-	}
+	state, err := s.learningRepo.GetByQuestionID(detail.ID)
 	if err != nil || state == nil {
 		return
 	}
@@ -1523,19 +1451,13 @@ func categoryNames(categories []models.Category) []string {
 	return result
 }
 
-// categoryNamesForAI keeps automatic classification at the broad-subject
-// level. Canonical system categories are eligible, as are top-level categories
-// explicitly created by this user; legacy/global fine-grained rows are not.
-func categoryNamesForAI(categories []models.Category, userID int64) []string {
+// categoryNamesForAI keeps automatic classification at the broad-subject level.
+func categoryNamesForAI(categories []models.Category) []string {
 	result := make([]string, 0, len(categories))
 	seen := make(map[string]struct{}, len(categories))
 	for _, category := range categories {
 		name := strings.TrimSpace(category.Name)
 		if category.ParentID != nil || name == "" {
-			continue
-		}
-		_, isCore := coreSubjectCategoryNames[name]
-		if !isCore && category.UserID != userID {
 			continue
 		}
 		key := strings.ToLower(name)
@@ -1718,15 +1640,10 @@ func cleanStringSlice(values []string) []string {
 // validateTaxonomySuggestion resolves AI-proposed names against the business
 // taxonomy without changing the question. Unmatched names remain visible so
 // the UI can explain which parts were not applicable.
-func (s *QuestionService) validateTaxonomySuggestion(input *ai.TaxonomySuggestion, userIDs ...int64) *ai.TaxonomySuggestion {
+func (s *QuestionService) validateTaxonomySuggestion(input *ai.TaxonomySuggestion) *ai.TaxonomySuggestion {
 	if input == nil {
 		return nil
 	}
-	userID := int64(0)
-	if len(userIDs) > 0 {
-		userID = userIDs[0]
-	}
-
 	suggestion := *input
 	suggestion.CategoryName = strings.TrimSpace(suggestion.CategoryName)
 	suggestion.TagNames = cleanStringSlice(suggestion.TagNames)
@@ -1749,13 +1666,7 @@ func (s *QuestionService) validateTaxonomySuggestion(input *ai.TaxonomySuggestio
 	}
 
 	if s.categoryRepo != nil && suggestion.CategoryName != "" {
-		var categories []models.Category
-		var err error
-		if userID > 0 {
-			categories, err = s.categoryRepo.ListForUser(userID)
-		} else {
-			categories, err = s.categoryRepo.List()
-		}
+		categories, err := s.categoryRepo.List()
 		if err == nil {
 			for _, category := range categories {
 				if category.ParentID == nil && strings.EqualFold(category.Name, suggestion.CategoryName) {
@@ -1771,13 +1682,7 @@ func (s *QuestionService) validateTaxonomySuggestion(input *ai.TaxonomySuggestio
 	}
 
 	if s.tagRepo != nil && len(suggestion.TagNames) > 0 {
-		var tags []models.Tag
-		var err error
-		if userID > 0 {
-			tags, err = s.tagRepo.ListForUser(userID)
-		} else {
-			tags, err = s.tagRepo.List()
-		}
+		tags, err := s.tagRepo.List()
 		if err == nil {
 			byName := make(map[string]int64, len(tags))
 			for _, tag := range tags {
@@ -1796,11 +1701,9 @@ func (s *QuestionService) validateTaxonomySuggestion(input *ai.TaxonomySuggestio
 	return &suggestion
 }
 
-// ensurePrivateSuggestedTags materializes new AI knowledge-point labels only
-// even when the broad category is uncertain. The tags belong to the current
-// anonymous user and therefore cannot affect another user's taxonomy.
-func (s *QuestionService) ensurePrivateSuggestedTags(suggestion *ai.TaxonomySuggestion, userID int64) {
-	if suggestion == nil || suggestion.CategoryID == nil || userID <= 0 || s.tagRepo == nil {
+// ensureSuggestedTags materializes new AI knowledge-point labels for this instance.
+func (s *QuestionService) ensureSuggestedTags(suggestion *ai.TaxonomySuggestion) {
+	if suggestion == nil || suggestion.CategoryID == nil || s.tagRepo == nil {
 		return
 	}
 	created := 0
@@ -1813,8 +1716,8 @@ func (s *QuestionService) ensurePrivateSuggestedTags(suggestion *ai.TaxonomySugg
 		if runeCount < 2 || runeCount > 32 || strings.ContainsAny(name, "\r\n\t") {
 			continue
 		}
-		if _, err := s.tagRepo.FindOrCreateForUser(userID, name); err != nil {
-			log.Printf("[taxonomy] create private suggested tag user=%d name=%q: %v", userID, name, err)
+		if _, err := s.tagRepo.FindOrCreate(name); err != nil {
+			log.Printf("[taxonomy] create suggested tag name=%q: %v", name, err)
 			continue
 		}
 		created++

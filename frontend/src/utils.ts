@@ -9,7 +9,6 @@ export function cx(...values: Array<string | false | null | undefined>): string 
 export async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
     ...init,
-    credentials: 'include',
     headers: {
       Accept: 'application/json',
       ...(init?.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }),

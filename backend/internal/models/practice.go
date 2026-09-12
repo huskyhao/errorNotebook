@@ -4,7 +4,6 @@ import "time"
 
 type PracticeSession struct {
 	ID           int64                     `gorm:"primaryKey" json:"id"`
-	UserID       int64                     `gorm:"not null;default:1;index" json:"userId"`
 	Name         string                    `gorm:"type:varchar(255);not null" json:"name"`
 	Status       string                    `gorm:"type:varchar(32);not null;default:'in_progress'" json:"status"`
 	TotalCount   int                       `gorm:"not null;default:0" json:"totalCount"`
@@ -20,7 +19,6 @@ func (PracticeSession) TableName() string {
 
 type PracticeSessionQuestion struct {
 	ID             int64     `gorm:"primaryKey" json:"id"`
-	UserID         int64     `gorm:"column:user_id;not null;default:1;index" json:"-"`
 	SessionID      int64     `gorm:"not null;index" json:"sessionId"`
 	QuestionID     int64     `gorm:"not null;index" json:"questionId"`
 	OrderIndex     int       `gorm:"not null" json:"orderIndex"`

@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"erro-notebook/backend/internal/auth"
 	"erro-notebook/backend/internal/integrations/ai"
 	"erro-notebook/backend/internal/models"
 )
@@ -75,7 +74,7 @@ func (s *QuestionService) processClaimedJob(parent context.Context, job *models.
 }
 
 func (s *QuestionService) processOCRJob(ctx context.Context, job *models.Job) error {
-	question, err := s.questionRepo.GetByIDForUser(job.QuestionID, job.UserID)
+	question, err := s.questionRepo.GetByID(job.QuestionID)
 	if err != nil || question == nil {
 		return fmt.Errorf("load question: %w", err)
 	}
@@ -95,14 +94,14 @@ func (s *QuestionService) processOCRJob(ctx context.Context, job *models.Job) er
 	job.ProcessingStage = "completed"
 	_ = s.jobRepo.Update(markJobCompleted(job))
 	s.updateBatchItem(job.JobID, "processing", "analysis_queued", "")
-	if _, err := s.AnalyzeQuestion(auth.WithUserID(ctx, job.UserID), question.ID); err != nil {
+	if _, err := s.AnalyzeQuestion(ctx, question.ID); err != nil {
 		return fmt.Errorf("enqueue analysis: %w", err)
 	}
 	return nil
 }
 
 func (s *QuestionService) processAnalysisJob(ctx context.Context, job *models.Job) error {
-	question, err := s.questionRepo.GetByIDForUser(job.QuestionID, job.UserID)
+	question, err := s.questionRepo.GetByID(job.QuestionID)
 	if err != nil || question == nil {
 		return fmt.Errorf("load question: %w", err)
 	}
@@ -112,7 +111,7 @@ func (s *QuestionService) processAnalysisJob(ctx context.Context, job *models.Jo
 		question.AnalysisStatus = "completed"
 		_ = s.questionRepo.Update(question)
 		_ = s.jobRepo.Update(markJobCompleted(job))
-		s.updateBatchItemByQuestion(job.QuestionID, job.UserID, "completed", "completed", "")
+		s.updateBatchItemByQuestion(job.QuestionID, "completed", "completed", "")
 		return nil
 	}
 	question.AnalysisStatus = "processing"
@@ -124,12 +123,12 @@ func (s *QuestionService) processAnalysisJob(ctx context.Context, job *models.Jo
 	var categories []models.Category
 	var tags []models.Tag
 	if s.categoryRepo != nil {
-		categories, _ = s.categoryRepo.ListForUser(job.UserID)
+		categories, _ = s.categoryRepo.List()
 	}
 	if s.tagRepo != nil {
-		tags, _ = s.tagRepo.ListForUser(job.UserID)
+		tags, _ = s.tagRepo.List()
 	}
-	categoryCandidates := categoryNamesForAI(categories, job.UserID)
+	categoryCandidates := categoryNamesForAI(categories)
 	req := aiAnalyzeRequest(question, warnings, categoryCandidates, tagNames(tags))
 	imagePath, cleanup, err := s.materializeQuestionImage(ctx, question)
 	if err != nil {
@@ -140,10 +139,10 @@ func (s *QuestionService) processAnalysisJob(ctx context.Context, job *models.Jo
 	if err != nil {
 		return fmt.Errorf("call ai service: %w", err)
 	}
-	suggestion := s.validateTaxonomySuggestion(resp.Analysis.TaxonomySuggestion, job.UserID)
+	suggestion := s.validateTaxonomySuggestion(resp.Analysis.TaxonomySuggestion)
 	if suggestion != nil {
-		s.ensurePrivateSuggestedTags(suggestion, job.UserID)
-		suggestion = s.validateTaxonomySuggestion(suggestion, job.UserID)
+		s.ensureSuggestedTags(suggestion)
+		suggestion = s.validateTaxonomySuggestion(suggestion)
 	}
 	resp.Analysis.TaxonomySuggestion = suggestion
 	contentJSON, err := json.Marshal(resp.Analysis)
@@ -154,7 +153,7 @@ func (s *QuestionService) processAnalysisJob(ctx context.Context, job *models.Jo
 	jobID := job.JobID
 	snapshot, _ := json.Marshal(map[string]any{"categoryCandidates": categoryCandidates, "tagCandidates": tagNames(tags)})
 	if err := s.analysisRepo.Create(&models.Analysis{
-		UserID: job.UserID, QuestionID: question.ID, JobID: &jobID, Provider: "ai-service", Answer: &answer, ContentJSON: string(contentJSON),
+		QuestionID: question.ID, JobID: &jobID, Provider: "ai-service", Answer: &answer, ContentJSON: string(contentJSON),
 		SourceQuestionFingerprint: questionContentFingerprint(question), TaxonomyCandidateSnapshotJSON: string(snapshot), GeneratedAt: time.Now(),
 	}); err != nil {
 		return fmt.Errorf("save analysis: %w", err)
@@ -175,7 +174,7 @@ func (s *QuestionService) processAnalysisJob(ctx context.Context, job *models.Jo
 	if suggestion := resp.Analysis.TaxonomySuggestion; suggestion != nil &&
 		(question.CategoryID == nil && len(question.Tags) == 0) &&
 		(suggestion.CategoryID != nil || len(suggestion.TagIDs) > 0) {
-		if err := s.questionRepo.ApplyTaxonomy(question.ID, suggestion.CategoryID, suggestion.TagIDs, job.UserID); err != nil {
+		if err := s.questionRepo.ApplyTaxonomy(question.ID, suggestion.CategoryID, suggestion.TagIDs); err != nil {
 			log.Printf("[task-worker] auto-apply taxonomy failed question=%d: %v", question.ID, err)
 		}
 	}
@@ -188,10 +187,10 @@ func (s *QuestionService) processAnalysisJob(ctx context.Context, job *models.Jo
 	}
 	if resp.Status == "needs_review" {
 		s.updateBatchItem(job.JobID, "needs_review", "needs_review", "")
-		s.updateBatchItemByQuestion(job.QuestionID, job.UserID, "needs_review", "needs_review", "")
+		s.updateBatchItemByQuestion(job.QuestionID, "needs_review", "needs_review", "")
 	} else {
 		s.updateBatchItem(job.JobID, "completed", "completed", "")
-		s.updateBatchItemByQuestion(job.QuestionID, job.UserID, "completed", "completed", "")
+		s.updateBatchItemByQuestion(job.QuestionID, "completed", "completed", "")
 	}
 	return nil
 }
@@ -280,12 +279,12 @@ func (s *QuestionService) failOrRetryJob(job *models.Job, err error) {
 	job.LockedAt = nil
 	_ = s.jobRepo.Update(job)
 	if job.JobType == "ocr" {
-		s.markQuestionOCRFailedForUser(job.QuestionID, job.UserID)
+		s.markQuestionOCRFailed(job.QuestionID)
 	} else if job.JobType == "analyze" {
-		s.failQuestionForUser(job.QuestionID, job.UserID)
+		s.failQuestion(job.QuestionID)
 	}
 	s.updateBatchItem(job.JobID, "failed", "failed", message)
-	s.updateBatchItemByQuestion(job.QuestionID, job.UserID, "failed", "failed", message)
+	s.updateBatchItemByQuestion(job.QuestionID, "failed", "failed", message)
 	log.Printf("[task-worker] terminal failure job=%s error=%s", job.JobID, message)
 }
 
@@ -310,11 +309,11 @@ func (s *QuestionService) updateBatchItem(jobID, status, stage, message string) 
 	}
 }
 
-func (s *QuestionService) updateBatchItemByQuestion(questionID, userID int64, status, stage, message string) {
+func (s *QuestionService) updateBatchItemByQuestion(questionID int64, status, stage, message string) {
 	if s.batchRepo == nil {
 		return
 	}
-	item, err := s.batchRepo.GetItemByQuestionID(questionID, userID)
+	item, err := s.batchRepo.GetItemByQuestionID(questionID)
 	if err != nil || item == nil {
 		return
 	}

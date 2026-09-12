@@ -8,13 +8,13 @@ describe('async import contract', () => {
     expect(analysisStatusLabel('processing')).toBe('解析中');
   });
 
-  it('sends the anonymous session cookie with Go API requests', async () => {
+  it('does not attach browser identity credentials to Go API requests', async () => {
     const fetchMock = jest.spyOn(global, 'fetch').mockResolvedValue({
       ok: true,
       json: async () => ({ data: { ok: true } }),
     } as Response);
-    await requestJson<{ ok: boolean }>('/session');
-    expect(fetchMock.mock.calls[0][1]).toEqual(expect.objectContaining({ credentials: 'include' }));
+    await requestJson<{ ok: boolean }>('/health');
+    expect(fetchMock.mock.calls[0][1]).not.toHaveProperty('credentials');
     fetchMock.mockRestore();
   });
 });

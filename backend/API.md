@@ -23,13 +23,11 @@
 }
 ```
 
-## 0. 匿名会话与数据归属
+## 0. 单实例数据模型
 
-Go 在首次访问 `/api/v1/*`（健康检查除外）时创建匿名 `User` 与 `UserSession`，通过签名、HttpOnly、SameSite=Lax 的 `erro_session` Cookie 识别用户。前端必须使用 `credentials: include`；请求体、查询参数或路径中传来的 `userId` 不参与鉴权。响应会在首次建会话时附带 `X-Erro-Anonymous-Notice: data-is-bound-to-this-browser`，`GET /api/v1/session` 返回同样的中文提示：未注册数据仅绑定当前浏览器，清除 Cookie 或更换设备后无法恢复。
+Go 不创建或校验用户、账号、登录态、Cookie 或浏览器 session。前端请求无需携带 `credentials`，也不需要提交 `userId`。题目、解析、任务、聊天、附件、proposal、练习、学习状态、分类和标签都直接属于当前部署实例；对象 key 使用 `questions/{questionId}/...`。
 
-`Question` 是归属根。QuestionAsset、Analysis、Job、ChatMessage、BatchImport、BatchImportItem、PracticeSession、PracticeSessionQuestion、QuestionLearningState、AIProposal 均带有 `user_id` 或通过归属根校验。详情、列表、修改、删除、聊天、解析、proposal、练习和推荐接口均按当前会话过滤；跨用户资源统一按 404 处理，不泄露资源是否存在。对象 key 使用 `users/{userId}/questions/{questionId}/...`，读取前仍需通过题目归属校验。
-
-Category/Tag 采用“系统词表 + 用户私有词表”策略：匿名用户可读取系统项和自己的自定义项，也可新增、修改、删除自己的分类/标签；系统项只读，避免一个用户影响其他用户。数据库迁移会确保 `数据结构`、`计算机组成原理`、`操作系统`、`计算机网络` 四个 408 顶层系统分类存在。AI 的 category 只能从这些大类或当前用户自建的顶层学科中选择；AI 新提出的知识点 tag 由 Go 创建为当前用户私有标签。建议默认应用到尚未手动设置 taxonomy 的题目，用户仍可在右侧手动调整。未来账号升级只预留会话迁移接口，本轮不实现注册、密码或 OAuth。
+数据库启动时会确保 `数据结构`、`计算机组成原理`、`操作系统`、`计算机网络` 四个顶层分类存在。分类和标签是当前实例的普通词表，AI 只能从现有分类中选择，并由 Go 校验后应用。
 
 ## 1. 服务边界
 
@@ -494,7 +492,7 @@ AI 解析结果可以包含可选的 `content.taxonomySuggestion`：
 }
 ```
 
-Python 只负责生成该字段，不直接写入业务库。`categoryName` 只能命中 Go 给出的顶层学科候选；`tagNames` 最多 3 个，优先复用已有标签，也可提出新的细粒度知识点。Go 校验后把新标签创建在当前匿名用户的私有词表中，再保存解析记录，并在分析完成时自动应用到尚未人工设置 taxonomy 的题目；正常前端流程不要求用户确认。没有匹配的大类学科时保持未分类，用户可在题目详情手动修改。
+Python 只负责生成该字段，不直接写入业务库。`categoryName` 只能命中 Go 给出的顶层学科候选；`tagNames` 最多 3 个，优先复用已有标签，也可提出新的细粒度知识点。Go 校验后把新标签写入当前实例词表，再保存解析记录，并在分析完成时自动应用到尚未人工设置 taxonomy 的题目。没有匹配的大类学科时保持未分类，用户可在题目详情手动修改。
 
 ## 7. 做题会话
 
@@ -524,7 +522,7 @@ Python 只负责生成该字段，不直接写入业务库。`categoryName` 只�
 
 `GET /api/v1/practice-sessions`
 
-响应：当前匿名会话用户的会话列表；服务端从 `erro_session` Cookie 解析归属。
+响应：当前实例中的练习会话列表。
 
 ### 7.3 做题会话详情
 
@@ -721,7 +719,7 @@ Python 侧动作契约、错误结构、multipart 解析示例和离线评测见
 
 ## 11. 当前限制
 
-* 当前为匿名会话鉴权，尚未实现邮箱、密码、OAuth、跨设备恢复和正式账号升级。
+* 当前为单实例模式，不提供注册、登录、账号恢复或多用户隔离。
 * PDF 导入、试卷拆题和批次校对接口已从 MVP 移除；当前稳定范围是图片导入和手动文本导入。
 * 图片先写入持久化对象存储，再由数据库 worker 异步处理 OCR 和解析；默认适配器为本地对象存储，后续可替换为 S3/MinIO。
 * Worker 使用数据库租约、自动退避重试和过期任务接管；暂未引入独立消息队列。

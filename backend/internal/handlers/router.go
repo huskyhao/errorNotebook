@@ -3,8 +3,6 @@ package handlers
 import (
 	"net/http"
 
-	"erro-notebook/backend/internal/auth"
-	"erro-notebook/backend/pkg/response"
 	"github.com/gin-gonic/gin"
 )
 
@@ -13,30 +11,15 @@ func NewRouter(
 	taxonomyHandler *TaxonomyHandler,
 	questionAIHandler *QuestionAIHandler,
 	practiceHandler *PracticeHandler,
-	sessionManagers ...*auth.Manager,
 ) *gin.Engine {
 	router := gin.Default()
 	router.Use(corsMiddleware())
-	if len(sessionManagers) > 0 && sessionManagers[0] != nil {
-		router.Use(sessionManagers[0].Middleware())
-	}
-	if questionHandler != nil {
-		router.Use(questionHandler.accessMiddleware())
-	}
-	if practiceHandler != nil {
-		router.Use(practiceHandler.accessMiddleware())
-	}
 
 	router.GET("/health", Health)
 
 	api := router.Group("/api/v1")
 	{
 		api.GET("/health", Health)
-		if len(sessionManagers) > 0 && sessionManagers[0] != nil {
-			manager := sessionManagers[0]
-			api.GET("/session", func(c *gin.Context) { response.OK(c, manager.SessionInfo(c)) })
-		}
-
 		if questionHandler != nil {
 			api.POST("/questions/import", questionHandler.Import)
 			api.POST("/questions/batch-import", questionHandler.BatchImport)
@@ -110,8 +93,7 @@ func corsMiddleware() gin.HandlerFunc {
 		origin := c.GetHeader("Origin")
 		if origin != "" {
 			c.Writer.Header().Set("Access-Control-Allow-Origin", origin)
-			c.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
-			c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With")
+			c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Requested-With")
 			c.Writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, PUT, DELETE, OPTIONS")
 			c.Writer.Header().Set("Vary", "Origin")
 		}

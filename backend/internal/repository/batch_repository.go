@@ -43,17 +43,6 @@ func (r *BatchRepository) GetBatchByID(id int64) (*models.BatchImport, error) {
 	return &batch, nil
 }
 
-func (r *BatchRepository) GetBatchByIDForUser(id, userID int64) (*models.BatchImport, error) {
-	var batch models.BatchImport
-	if err := r.db.Where("id = ? AND user_id = ?", id, userID).First(&batch).Error; err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("get batch by owner: %w", err)
-	}
-	return &batch, nil
-}
-
 func (r *BatchRepository) GetItemsByBatchID(batchID int64) ([]models.BatchImportItem, error) {
 	var items []models.BatchImportItem
 	if err := r.db.Where("batch_id = ?", batchID).Order("file_index asc").Find(&items).Error; err != nil {
@@ -80,9 +69,9 @@ func (r *BatchRepository) GetItemByJobID(jobID string) (*models.BatchImportItem,
 	return &item, nil
 }
 
-func (r *BatchRepository) GetItemByQuestionID(questionID, userID int64) (*models.BatchImportItem, error) {
+func (r *BatchRepository) GetItemByQuestionID(questionID int64) (*models.BatchImportItem, error) {
 	var item models.BatchImportItem
-	if err := r.db.Where("question_id = ? AND user_id = ?", questionID, userID).First(&item).Error; err != nil {
+	if err := r.db.Where("question_id = ?", questionID).First(&item).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
 			return nil, nil
 		}

@@ -31,14 +31,6 @@ func (r *ChatRepository) ListByQuestionID(questionID int64) ([]models.ChatMessag
 	return messages, nil
 }
 
-func (r *ChatRepository) ListByQuestionIDForUser(questionID, userID int64) ([]models.ChatMessage, error) {
-	var messages []models.ChatMessage
-	if err := r.db.Where("question_id = ? AND user_id = ?", questionID, userID).Order("id asc").Find(&messages).Error; err != nil {
-		return nil, fmt.Errorf("list chat messages by owner: %w", err)
-	}
-	return messages, nil
-}
-
 func (r *ChatRepository) GetByIdempotencyKey(questionID int64, key string) (*models.ChatMessage, error) {
 	var message models.ChatMessage
 	if err := r.db.Where("question_id = ? AND idempotency_key = ?", questionID, key).First(&message).Error; err != nil {
