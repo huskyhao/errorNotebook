@@ -13,7 +13,7 @@ from app.core.config import settings
 from app.core.logging import format_log
 from app.schemas.analysis import AnalysisPayload, AnalysisRequest, AnalysisResponse, TaxonomySuggestion
 from app.services.openai_client import OpenAICompatibleError, build_openai_client
-from app.services.vision_service import MultimodalClient, build_multimodal_client
+from app.services.vision_service import build_multimodal_client
 
 logger = logging.getLogger("app.services.analysis")
 T = TypeVar("T")

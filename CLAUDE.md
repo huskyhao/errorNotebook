@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to Claude Code (claude.ai/code) when working in this repository.
 
 ## Project overview
 
@@ -26,7 +26,8 @@ ErroNotebook is an AI-powered error-question workbench for CS/STEM exam prep. Us
 cd backend
 go build ./cmd/server/          # build
 go run ./cmd/server/            # run (needs MYSQL_DSN, AI_SERVICE_BASE_URL)
-go test ./...                   # test (none written yet)
+go test ./...                   # unit and contract tests
+go vet ./...                    # static checks
 ```
 
 Required env vars: `MYSQL_DSN`, `AI_SERVICE_BASE_URL`. Optional: `PORT` (default 8080), `AI_SERVICE_TIMEOUT_SECONDS` (default 15). Supports `.env` files in CWD or `backend/`.
@@ -38,6 +39,7 @@ cd ai-service
 python -m venv .venv && source .venv/bin/activate  # or .venv\Scripts\Activate.ps1 on Windows
 pip install -r requirements.txt
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8001
+python run_tests.py            # offline unit/contract tests
 ```
 
 Optional: `pip install paddleocr` for real OCR (defaults to mock backend). Swagger docs at `http://localhost:8001/docs`.
@@ -50,8 +52,10 @@ Key env vars: `OPENAI_BASE_URL`, `OPENAI_API_KEY`, `OPENAI_MODEL` (set to enable
 cd frontend
 npm install
 npm start                       # dev server on :3000
-npm test                        # Jest
-npm run build                   # production build to build/
+npm test -- --watchAll=false   # Jest
+npx tsc --noEmit               # type check
+npx eslint src --ext .ts,.tsx  # lint
+npm run build                  # production build to build/
 ```
 
 Env: `REACT_APP_API_BASE_URL` (defaults to `http://localhost:8080/api/v1`).
@@ -76,8 +80,9 @@ Env: `REACT_APP_API_BASE_URL` (defaults to `http://localhost:8080/api/v1`).
 - `core/config.py` — `Settings` dataclass from env vars
 
 ### Frontend (`frontend/src/`)
-- `pages/QuestionWorkbenchPage.tsx` — the entire SPA (4-column layout: nav, sidebar, reasoning center, detail panel)
-- `App.css` — all styles via CSS custom properties
+- `pages/` — page-level entries for workbench, practice, stats, archive and settings
+- `components/` — reusable workbench, taxonomy, chat and dialog components
+- `App.css` — shared visual system and workbench layout styles
 
 ## Conventions
 
@@ -90,4 +95,4 @@ Env: `REACT_APP_API_BASE_URL` (defaults to `http://localhost:8080/api/v1`).
 
 ## Current state
 
-Core loop works synchronously (import → OCR → answer → analyze → chat) using job semantics ready for async. Multimodal diagram support implemented: when PaddleOCR detects diagram keywords ("如图", "下图", etc.), the OCR phase calls a vision LLM (Qwen3-VL-32B) to describe the diagram as text, stored in `Question.DiagramDescription`. The analysis LLM receives this text description for better reasoning on diagram questions. Vision fallback is optional — if `VISION_*` env vars are not set, OCR proceeds without it. Chat is a placeholder (persists messages, returns canned assistant reply — no LLM yet). No auth. Tests not yet written across all three services.
+The core loop uses database-backed jobs for import → OCR → analysis, then supports answer submission and question-scoped chat. Anonymous signed sessions scope questions, jobs, analyses, attachments, proposals, practice sessions and learning state. The Python service supports mock and OpenAI-compatible text/vision providers, while Go remains the only business API entry point. Go, Python and frontend tests are present; the Python offline runner and P0/P1 evaluation scripts do not require API credentials.

@@ -166,7 +166,7 @@ Python 测试：
 
 ```powershell
 cd ai-service
-python -m unittest discover -s tests
+python run_tests.py
 ```
 
 前端生产构建：

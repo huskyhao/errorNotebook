@@ -15,7 +15,8 @@ def context(**changes):
         ), latestAnswer="a=2m/s^2", referenceAnswer="a=2m/s^2", contentFingerprint="sha256:source",
         categoryCandidates=["物理"], tagCandidates=["牛顿定律", "受力分析"],
     )
-    for key, value2 in changes.items(): setattr(value, key, value2)
+    for key, value2 in changes.items():
+        setattr(value, key, value2)
     return value
 
 

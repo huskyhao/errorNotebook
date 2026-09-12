@@ -6,7 +6,7 @@ import time
 
 from app.core.logging import format_log
 from app.core.config import settings
-from app.schemas.chat import ChatMessageItem, ChatRequest, ChatResponse
+from app.schemas.chat import ChatRequest, ChatResponse
 from app.services.openai_client import OpenAICompatibleError, build_openai_client
 from app.services.vision_service import build_multimodal_client
 
@@ -69,7 +69,7 @@ class ChatService:
         elif self._client is None:
             if settings.llm_backend != "mock":
                 raise OpenAICompatibleError("AI_CONFIG_MISSING", "real AI provider is not configured", False, 503)
-            await asyncio.sleep(1)
+            await asyncio.sleep(settings.llm_mock_delay_seconds)
             reply = self._build_mock_reply(request)
             cost = {}
         else:
@@ -149,7 +149,7 @@ class ChatService:
                 parts.append(f"- 解题步骤：{'；'.join(a.steps)}")
             if a.optionAnalysis:
                 opt_lines = [f"  {k}：{v}" for k, v in a.optionAnalysis.items()]
-                parts.append(f"- 选项分析：\n" + "\n".join(opt_lines))
+                parts.append("- 选项分析：\n" + "\n".join(opt_lines))
             if a.pitfalls:
                 parts.append(f"- 常见陷阱：{', '.join(a.pitfalls)}")
             if a.reviewAdvice:

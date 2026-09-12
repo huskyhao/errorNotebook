@@ -75,7 +75,6 @@ ai-service/htmlcov/
 
 # Generic Python
 __pycache__/
-**/__pycache__/
 *.py[cod]
 *.pyo
 *.pyd

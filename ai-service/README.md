@@ -233,6 +233,12 @@ python evals/run_p1_eval.py
 python -m pytest -q
 ```
 
+全量单元测试也可以使用仓库提供的离线 runner；它只在未显式设置时默认使用 mock provider，避免本地 `.env` 导致测试访问真实服务：
+
+```powershell
+python run_tests.py
+```
+
 未配置真实 provider 时，报告只代表 mock/契约结果，不代表真实模型内容质量。
 
 这样可以先确认 AI 服务本身，再进入 Go 编排联调。

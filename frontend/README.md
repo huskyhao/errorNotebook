@@ -1,46 +1,28 @@
-# Getting Started with Create React App
+# ErroNotebook Frontend
 
-This project was bootstrapped with [Create React App](https://github.com/facebook/create-react-app).
+React + TypeScript 前端，提供单题工作台、练习、统计、归档和设置页面。前端只调用 Go 后端，不直接访问 Python AI 服务。
 
-## Available Scripts
+## 本地运行
 
-In the project directory, you can run:
+```powershell
+npm install
+npm start
+```
 
-### `npm start`
+默认访问 `http://localhost:3000`。可通过 `REACT_APP_API_BASE_URL` 覆盖 Go API 地址，默认值为 `http://localhost:8080/api/v1`。
 
-Runs the app in the development mode.\
-Open [http://localhost:3000](http://localhost:3000) to view it in the browser.
+## 验证
 
-The page will reload if you make edits.\
-You will also see any lint errors in the console.
+```powershell
+npm test -- --watchAll=false
+npx tsc --noEmit
+npx eslint src --ext .ts,.tsx
+npm run build
+```
 
-### `npm test`
+## 目录约定
 
-Launches the test runner in the interactive watch mode.\
-See the section about [running tests](https://facebook.github.io/create-react-app/docs/running-tests) for more information.
-
-### `npm run build`
-
-Builds the app for production to the `build` folder.\
-It correctly bundles React in production mode and optimizes the build for the best performance.
-
-The build is minified and the filenames include the hashes.\
-Your app is ready to be deployed!
-
-See the section about [deployment](https://facebook.github.io/create-react-app/docs/deployment) for more information.
-
-### `npm run eject`
-
-**Note: this is a one-way operation. Once you `eject`, you can’t go back!**
-
-If you aren’t satisfied with the build tool and configuration choices, you can `eject` at any time. This command will remove the single build dependency from your project.
-
-Instead, it will copy all the configuration files and the transitive dependencies (webpack, Babel, ESLint, etc) right into your project so you have full control over them. All of the commands except `eject` will still work, but they will point to the copied scripts so you can tweak them. At this point you’re on your own.
-
-You don’t have to ever use `eject`. The curated feature set is suitable for small and middle deployments, and you shouldn’t feel obligated to use this feature. However we understand that this tool wouldn’t be useful if you couldn’t customize it when you are ready for it.
-
-## Learn More
-
-You can learn more in the [Create React App documentation](https://facebook.github.io/create-react-app/docs/getting-started).
-
-To learn React, check out the [React documentation](https://reactjs.org/).
+- `src/pages/`：页面入口和页面级状态编排
+- `src/components/`：工作台、题目、解析、追问和弹窗组件
+- `src/types.ts`：前后端交互使用的 TypeScript 类型
+- `src/utils.ts`：API 请求、状态标签和共享转换逻辑

@@ -309,7 +309,9 @@ class AgentDispatcher:
     @staticmethod
     def _mechanical_copy(candidate: str, source: str) -> bool:
         """Catch exact and number/option-order-only copies without judging content."""
-        normalize = lambda value: re.sub(r"[\s\W_]+", "", re.sub(r"\d+(?:\.\d+)?", "#", value.casefold()))
+        def normalize(value: str) -> str:
+            return re.sub(r"[\s\W_]+", "", re.sub(r"\d+(?:\.\d+)?", "#", value.casefold()))
+
         return bool(candidate.strip() and normalize(candidate) == normalize(source))
 
     @staticmethod

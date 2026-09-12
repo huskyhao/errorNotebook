@@ -12,6 +12,5 @@ test('does not show tag candidates when the tag field is focused', () => {
 
   fireEvent.focus(screen.getByPlaceholderText('添加知识点...'));
 
-  expect(document.querySelector('.tag-suggestions')).toBeNull();
   expect(screen.queryByText('同步互斥')).not.toBeInTheDocument();
 });

@@ -1,3 +1,358 @@
+# 2026-09-12 进一步纠偏：移除用户体系，收敛为单实例单租户
+
+## 对需求的准确理解
+
+本轮不是继续做游客登录，也不是把账号功能做得更轻，而是：
+
+- 从产品和运行时行为中移除登录、注册、OAuth、邮箱验证码、匿名 Cookie、用户隔离和跨用户权限判断。
+- 每次部署只有一套数据库和一套题库，所有题目、解析、聊天、练习、标签、分类和 Agent proposal 都属于这个实例。
+- 右上角 H 不再承担用户身份，恢复为普通品牌/设置入口或直接移除“用户”语义。
+- 现有数据库里的数据必须保留；迁移以“先统一归并、验证、再清理”为原则，不直接删表或 reset。
+
+## 数据迁移策略
+
+不要在一次提交里直接 `DROP users` 或删除所有 `user_id` 字段。建议分两步：
+
+1. 运行时先切到单租户：停止创建/读取 Cookie 和 Session，所有 repository/service 不再按 user 过滤；现有 `user_id` 列暂时保留为 legacy 字段并统一写入固定 owner（例如 `1`），这样旧数据库和旧对象仍能读取。
+2. 编写幂等迁移脚本并先备份数据库：将所有用户数据归并到单实例；对同名分类/标签去重并重映射 `question_tags` 与 `category_id`；检查 proposal/job/chat/练习外键和唯一索引；对象存储从 `users/{userId}/questions/...` 迁移到单租户路径或保留兼容读取。
+3. 新旧代码稳定运行一轮后，再单独提交可选 schema 清理（删除 `users`、`user_sessions` 和业务表 `user_id` 列）。如果清理会增加风险，保留 legacy 列也可以，关键是运行时不再暴露多用户概念。
+
+## 新 Goal 指令
+
+```text
+请以“移除 ErroNotebook 用户体系并完成单实例单租户数据迁移”为本次 goal，实际修改代码、迁移数据库、测试和文档；不要只输出方案。项目是 GitHub 上供朋友自行部署的本地/私有应用，不是集中式 SaaS。
+
+一、基线和不可破坏项
+1. 先阅读 AGENTS.md、project.md、webdesign.md、talk.md 最新记录、README.md、backend/API.md、ai-service/README.md，以及 backend、ai-service、frontend 全部用户/会话相关实现和测试。
+2. 先运行 Python 测试与评测、Go 测试/vet、前端测试/TypeScript/构建，记录基线。不得破坏导入、OCR、异步 Job、解析、作答、聊天、taxonomy、proposal、练习和学习状态功能。
+3. 不执行 git reset/checkout，不删除 `backend/uploads` 或现有数据库数据。所有 schema 变化必须可重复执行，并提供备份/回滚说明。
+
+二、移除运行时用户语义
+1. 前端右上角 H 不再显示用户/游客/登录语义；改为品牌或设置入口。移除登录注册入口、游客提示、账号相关文案和 `/session` 业务依赖。
+2. Go 不再创建或校验 `erro_session` Cookie，不再注入 `UserID` context，不再对 Question、Job、Analysis、ChatMessage、PracticeSession、AIProposal、Category、Tag 等做用户过滤或越权 404。所有请求直接访问当前单实例数据。
+3. 删除或停用 auth middleware、`User/UserSession` 业务模型、`UserIDFromContext`、`currentUserID`、`GetForUser` 等运行时依赖；清理 handler、service、repository、storage key 和测试中的用户参数。Python 不增加任何认证逻辑。
+4. API 文档和前端请求不再要求 `credentials`、userId、anonymous notice 或登录状态；保持现有业务路由和响应结构稳定，避免把单租户改造变成前端功能回退。
+
+三、现有数据库安全迁移
+1. 第一阶段采用兼容迁移：保留旧 `user_id` 列和旧表，新增/确认固定单实例 owner（如 `1`），把所有业务行的 `user_id` 归一到该 owner；运行时不再依赖这些字段。
+2. 对 Category/Tag 按规范化名称去重：保留确定的一条记录，更新所有 QuestionTag 和 Question.CategoryID 引用，删除重复记录；系统分类和用户自建分类在单实例中都变成普通可编辑词表，不能丢失题目关联。
+3. 检查并修复所有外键、唯一索引、proposal 的 idempotency key、Job/Chat/Practice 关联和分析记录；迁移必须支持重复执行且不产生重复关系。
+4. 处理对象存储兼容：新文件使用 `questions/{questionId}/...` 或等价单租户 key；旧的 `users/{userId}/...` 文件要么在迁移中移动，要么实现旧 key fallback，不能因为移除用户字段导致图片题失效。
+5. 提供明确的迁移命令/SQL 或 Go migration、执行前备份检查、迁移后行数与关联完整性校验；先保留 legacy 表/列一个版本，确认稳定后再决定是否物理删除。
+
+四、保留基础运行安全，但不做账号系统
+1. Python 仅内网可访问；保留文件 MIME/大小校验、请求体上限、超时、Worker 并发上限、失败重试和日志脱敏。
+2. API Key 只来自本机 `.env` 或 Docker secrets，不进入用户表、浏览器 localStorage、URL 或日志。设置页只展示 provider/model/是否配置。
+3. 如果保留限流，只按 IP/实例成本做简单保护，不引入 user/session 额度和账号配额。
+
+五、功能和 Agent 继续作为主线
+1. 把 p0/p1 评测改为逐例执行并校验 expected/forbidden，报告真实 provider、mock 和未验证项；补真实 408 样例的有限预算验收。
+2. 完善三级提示、错因诊断的解题过程追问、换种讲法的卡点选择、聊天上下文和失败状态。
+3. 修复主观题评分确认后的 `ungraded/manual_required` 状态语义，完善相似题答案/解析一致性和 proposal 过期校验。
+4. 若引入 LangGraph，只在 Python 内实现有限步数的 `QuestionTutorGraph`：preflight → assess_evidence → choose_intervention → generate → validate → repair/needs_review/completed；Go 继续负责业务数据和最终持久化，禁止无限自主循环。
+
+六、测试和完成条件
+1. Go 测试覆盖：无 Cookie 也能访问、旧 Cookie 不影响结果、不同旧 user_id 的数据归并后都可见、分类/标签重映射、旧图片 key fallback、迁移重复执行、proposal/job/chat/practice 关联完整。
+2. 前端测试覆盖：无登录状态正常工作、H 图标不再呈现用户语义、导入/轮询/追问/练习流程不回退。
+3. Python 测试和 Agent 评测保持原有通过；真实 provider 质量单独报告。
+4. 同步 AGENTS.md、README.md、project.md、webdesign.md、backend/API.md、ai-service/README.md 和 `.env.example`，删除“匿名用户/注册/跨用户隔离/账号升级”等过时产品文案。
+5. 最终交付：变更清单、迁移脚本/SQL、备份和回滚说明、测试命令及结果、数据完整性校验结果、Agent 功能改进和剩余限制。只有运行时单租户化、旧数据可读、核心功能无回退且文档一致后才能宣布 goal 完成。
+```
+
+---
+
+# 2026-09-12 方向纠偏：项目定位为自部署单租户应用，停止扩展登录体系
+
+## 决策
+
+本项目是发布到 GitHub 供朋友自行部署的完整前后端项目，不是由作者集中托管的 SaaS。每个部署实例拥有自己的 MySQL、Go、Python 服务和 Provider 配置，默认天然是单租户。因此：
+
+- 登录、注册、OAuth、邮箱验证码、账号升级、跨用户隔离、跨设备同步不再属于当前产品主线。
+- 之前关于“匿名升级正式账号”的 Goal 由本记录 supersede，不应继续按那个方向扩展功能。
+- 现有匿名 Cookie/`UserSession` 代码暂时不要直接大规模删除，先作为当前实现的兼容层；后续可在稳定功能后评估是否简化为单实例 owner。不要为了删除它而破坏已有数据和主链路。
+- 如果用户把实例暴露到公网，仍需做基础运行安全（内网限制、CORS、文件大小、请求超时、限流和密钥脱敏），但不需要做完整用户系统。
+
+## Provider Key 的正确定位
+
+- 自部署项目优先使用 `.env` / Docker secrets 配置 `OPENAI_API_KEY`、`VISION_API_KEY`、模型和 Base URL；API Key 属于这台机器的部署配置，不属于业务用户资料。
+- 设置页可以展示当前 provider、模型和“是否已配置”，但不建议把 API Key 存到业务数据库或让前端负责保管。
+- Docker Compose 应提供 `.env.example`、MySQL、Go、Python、前端的最小启动方式和健康检查；真实 Key 只通过本地 `.env` 或 secrets 注入，日志绝不打印。
+
+## 新的下一阶段 Goal 指令
+
+```text
+请以“完成 ErroNotebook 自部署单租户版本的功能收口与 Agent 质量提升”为本次 goal，实际实现、测试、验收并同步文档。项目面向 GitHub 用户自行部署，不是集中式 SaaS；不要新增登录、注册、OAuth、邮箱验证码、账号迁移、跨用户隔离或跨设备同步功能。
+
+一、确认部署边界
+1. 先阅读 AGENTS.md、project.md、webdesign.md、talk.md 最新记录、README.md、backend/API.md、ai-service/README.md 和当前代码；运行 Python/Go/前端基线测试并记录结果。
+2. 以单实例单租户为默认模型：一套部署对应一套 MySQL 和一套 Provider 配置。现有 User/UserSession 代码先保持兼容，不把本轮时间花在重写或删除认证表上。
+3. API Key 只通过 Go/Python 服务端 `.env` 或 Docker secrets 注入；设置页只展示配置状态，不保存明文 Key，不放 localStorage、URL、数据库或日志。未配置真实 provider 时明确显示 mock/配置缺失，不能伪装真实效果。
+
+二、Docker 与开箱即用
+1. 增加或完善 `docker-compose.yml`、各服务 Dockerfile、`.env.example`、健康检查、启动依赖和数据卷；至少支持 MySQL + Go + Python AI service 的一键启动，前端提供开发/生产两种方式。
+2. README 给出 Windows/macOS/Linux 的最短启动路径、端口、迁移、Provider 配置、日志查看、停止和数据备份说明；默认不要求注册账号。
+3. Go 只对外暴露业务 API；Python AI 服务默认只在内部网络可访问。保留上传类型/大小校验、请求超时、并发上限、错误脱敏和基础限流，避免公网暴露时轻易拖垮实例。
+
+三、优先打磨错题工作台和 Agent 功能
+1. 把 p0/p1 评测改为逐例执行：每个案例都要真实构造 QuestionContext、调用动作并检查 expected/forbidden，报告逐例结果和聚合指标；mock 与真实 provider 分开统计。
+2. 补 Agent 端到端闭环和前端测试：导入 → OCR → 解析 → 作答 → 错因诊断/提示/换种讲法 → 追问 → 保存；覆盖 needs_input、needs_review、failed、重试、取消和模型不可用。
+3. 实现真正的三级提示：记录当前题已使用的提示级别，允许用户逐级请求，一级不泄露答案，二/三级逐步增加具体性；不允许每次都固定从一级开始。
+4. 改进错因诊断：最终答案不足以判断概念混淆、条件遗漏、计算错误或方法错误时，先追问关键步骤，把证据与诊断对应展示；不确定时返回 needs_review。
+5. 改进换种讲法和聊天上下文：允许用户指定概念、步骤或选项作为卡点；限制历史长度但保留最近目标和已解释内容，避免重复回答。
+6. 改进相似题和主观题评分：增加独立答案/解析一致性校验、机械复制检测、评分依据展示、人工确认状态和过期指纹；修复确认后仍显示 `ungraded/manual_required` 的状态语义。
+7. 如果引入 LangGraph，只实现一个有限步数的 `QuestionTutorGraph`：preflight → assess_evidence → choose_intervention → generate → validate → repair/needs_review/completed，并加入“提示 → 等待用户回答 → 判断是否掌握”的短循环。Go 仍负责业务数据和最终持久化，图不能访问 MySQL 或无限自主循环。
+
+四、学习闭环和页面质量
+1. 优先完善题目详情、解析、追问、练习结果、标签/分类和异步状态的交互，保持桌面三栏工作台，不新增独立 Agent 页面。
+2. 补练习模式的主观题 AI 建议展示、确认后状态、学习状态更新边界和推荐原因；客观题继续由 Go 规则判分。
+3. 增加真实浏览器级 smoke 或最小 Playwright 验收，验证上传、轮询、切题、追问、失败重试和生产构建，而不仅是组件渲染测试。
+
+五、完成条件
+1. Python 测试、Go 测试/vet、前端测试/TypeScript/构建、逐例 P0/P1 评测和 Docker 启动检查全部可复现。
+2. 至少用有限预算验证真实 provider 的 408 样例；报告明确区分真实、mock、未验证项，不虚构 Agent 教学质量。
+3. 同步 README、project.md、webdesign.md、backend/API.md、ai-service/README.md 和 `.env.example`；删除或改写所有“必须登录/账号升级/多用户 SaaS”式旧规划文案。
+4. 最终交付能力清单、启动命令、关键接口、评测报告、已知限制和下一步建议。只有代码、测试、文档和自部署路径均完成后才能宣布 goal 完成。
+```
+
+---
+
+# 2026-09-12 下一阶段 Goal：匿名优先账户、Provider 设置与 Agent 编排收口
+
+下面这段可以直接作为下一次实现任务的 Goal 指令。目标是实际修改代码、测试和文档，不只输出方案；先检查并保留当前工作区修改，不执行 reset/checkout，不删除本地上传数据。
+
+```text
+请以“完成 ErroNotebook 匿名优先账户体系、AI Provider 设置和单题辅导 Agent 编排收口”为本次 goal，实际实现、测试、验收并同步文档。
+
+一、先确认基线与范围
+1. 完整阅读 AGENTS.md、project.md、webdesign.md、talk.md 最新记录、README.md、backend/API.md、ai-service/README.md，以及当前 Go/Python/前端实现和测试。
+2. 先运行现有 Python 测试与 P0/P1 评测、Go 测试/vet、前端测试/TypeScript/构建，记录基线；不得回退匿名隔离、异步 Job、图片真实字节、taxonomy 自动应用、proposal 幂等和失败不伪装 completed 等已有约束。
+3. 本轮核心范围是：游客默认使用、登录/注册入口、邮箱验证码、一个 OAuth/OIDC 提供商、游客数据升级迁移、Provider API Key 设置、限流/额度和必要安全测试。不要引入支付、复杂 RBAC、社交功能、知识图谱、向量库或新的业务微服务。
+
+二、游客优先与登录注册体验
+1. 将前端右上角 H 图标改为“登录 / 注册”入口；未登录时显示轻量“游客模式”状态，不弹窗阻断导入、OCR、解析、追问和练习。设置页说明：游客数据只绑定当前浏览器，清除 Cookie 或更换设备后无法恢复。
+2. 登录入口提供邮箱一次性验证码（或 magic link）和一个 OAuth/OIDC 提供商（优先 GitHub 或 Google，选择一个即可）。前端只能调用 Go `/api/v1/auth/*`，不能直连 OAuth、邮件服务或 Python。
+3. Go 负责 OAuth state/PKCE、回调、code/token 校验、邮箱验证码生成与校验、正式 Session、登出和当前用户信息；Python 不承担身份认证。OAuth client secret、邮件凭据只能在 Go 服务端环境变量或密钥管理中保存。
+4. 邮箱验证码只保存哈希值，10 分钟过期、单次使用、最多 5 次尝试，并按 IP、邮箱和匿名 Session 限制请求频率；异常频率返回 429 或要求 CAPTCHA，不让正常朋友每次登录都遇到验证码。
+5. 登录已有账号时不要自动合并另一个账号的数据。游客升级必须显式确认，并在事务中迁移当前匿名 User 的题目、附件、解析、聊天、练习、学习状态、taxonomy 和 proposal；迁移后轮换 Session。重复点击、超时和并发升级必须幂等。
+6. 账号模型保持业务表的 `user_id` 归属不变；建议新增 `user_identities`（email/oauth provider + subject 唯一约束）和必要的 `auth_challenges`，保留 `users.kind=anonymous/registered`。增加账号注销/数据删除或至少预留清晰接口，不允许遗留孤立附件。
+
+三、设置页 Provider API Key：可用，但必须服务端保护
+1. 设置页新增 AI Provider 配置：provider、baseURL、model、API Key；游客也可以填写，配置归当前匿名 User/浏览器，不要求先注册。注册升级后可选择迁移配置，默认不自动跨账号复制。
+2. 前端不把 API Key 放入 localStorage、URL、普通日志或页面回显；请求只走 Go。Go 使用 `APP_ENCRYPTION_KEY`（或等价密钥管理）加密存储，读取接口只返回 provider/model、是否已配置和 key 后四位，绝不返回原文。
+3. Go 调用 Python 时只在内存中传递当前请求所需的 Provider 配置，Python 不落盘、不记录、不回传 API Key；内部接口增加服务间认证或仅允许内网访问。没有配置用户 Key 时，按现有服务端 `.env` provider fallback；两者都没有时返回明确 `AI_CONFIG_MISSING`，不能静默切到 mock。
+4. 提供“测试连接”接口，但必须使用独立短超时、调用预算为 1、日志脱敏；成功只返回 provider/model 和耗时，不返回上游原始响应。删除/替换 Key 时清理旧密文，不能在错误信息里泄露 Key。
+5. 为上传、OCR、解析、Agent、聊天分别设置用户/IP/Session 额度；限制请求体、图片字节/数量、并发 Job、模型调用次数、单用户存储量和总 deadline。达到额度返回可区分的 429/配额错误，并在前端提示如何稍后重试或注册。
+
+四、LangGraph 只用于真实的单题辅导编排
+1. 不要把每个现有动作机械包成节点。保留 Go 作为业务入口、权限和最终持久化；Python 侧将现有 AgentDispatcher 重构为有限步数的 `QuestionTutorGraph`，或在隔离模块中提供等价实现。
+2. 图至少包含：`preflight`（缺作答/题面残缺）→ `assess_evidence` → `choose_intervention`（hint/diagnose/explain）→ `generate_structured_result` → `validate_domain` → `repair`（最多一次）/`needs_review`/`completed`。动作仍由 Go 显式指定，模型不能自行改变 action。
+3. 增加一个可演示的短循环：第 1 级提示 → 等待用户回答（显式暂停）→ 判断是否理解 → 第 2/3 级提示或结束。最多 3 次干预、总 deadline、可取消、上下文和 token 上限，禁止无限自主循环。
+4. LangGraph state 只保存受限 QuestionContext、当前节点和版本指纹；Go 继续保存聊天、作答、学习状态和 proposal。图不能访问 MySQL、发送任意网络请求、创建正式 Question 或修改成绩。
+5. 记录 `traceId`、graphVersion、node、provider/model、duration、attempts、source(mock/real) 和最终状态，不能记录题面全文、图片 base64、完整作答或密钥。
+
+五、测试、评测和文档完成条件
+1. 增加 Go 路由/服务测试：游客可用、OTP 过期/重复/暴力尝试、OAuth state 失败、Session 轮换、游客升级迁移、重复升级、跨用户 404、限流/额度和 API Key 脱敏。
+2. 增加 Python/Go 契约测试：用户 Provider 配置只在内存请求中传递；未配置真实 provider 不伪装 mock；LangGraph 的 needs_input、needs_review、failed、取消和最大步数均能收敛。
+3. 前端增加登录/注册入口、游客提示、设置保存/测试连接、登出、升级后刷新和错误状态测试；不得在测试快照或 DOM 中出现完整 API Key。
+4. 将 p0_cases.json、p1_cases.json 改为逐例执行并校验 expected/forbidden，补充账号安全、Key 脱敏、LangGraph 分支和三级提示案例；mock 与真实 provider 报告分开，不能把 mock 结果当作教学质量。
+5. 同步 AGENTS.md（不再写“早期规划阶段”）、README.md、project.md、webdesign.md、backend/API.md、ai-service/README.md 和 `.env.example`，明确游客/注册、Provider 配置、OAuth/OTP、限流、LangGraph 边界和已知限制。
+6. 最终交付必须包含：能力清单、数据库迁移、接口示例、密钥存储与脱敏说明、测试命令及结果、逐例评测报告、真实/mock 范围、未完成项和下一步建议。只有实现和必要验证均完成后才能宣布 goal 完成。
+
+推荐默认决策：邮箱验证码 + 一个 OAuth 提供商；游客立即可用；AI Key 由 Go 加密保存；LangGraph 只编排单题辅导短循环；不增加独立 Agent 平台。
+```
+
+---
+
+# 2026-09-12 登录注册策略与 LangGraph 适用边界讨论
+
+## 一、登录/注册建议：匿名优先，注册作为“升级”而不是使用前置条件
+
+当前已经有签名 HttpOnly `erro_session` Cookie 和匿名 `User/UserSession`，这个方向是对的。推荐分三步做：
+
+1. **首次访问直接进入游客模式。** 不要求注册即可导入题目、OCR、解析和追问；页面明确提示“数据仅绑定当前浏览器，清除 Cookie 后无法恢复”。这样朋友可以零门槛体验。
+2. **需要跨设备/长期保存时再注册。** 第一版账号建议采用邮箱 magic link/一次性验证码，或一个 OAuth 提供商，不要先做复杂密码体系。登录成功后，把当前匿名 User 的题目、附件、解析、聊天、练习和学习状态在事务中迁移到正式 User，随后轮换 Session Cookie。
+3. **注册入口保持可见但不打断主流程。** 在题目数量、使用天数或换设备时提示“保存到账号”，而不是打开页面就强制登录。游客数据可设置保留期，正式账号数据不自动清理。
+
+### 真正需要防护的是资源滥用，不是“账号数量”本身
+
+大量注册只是表象，真正的攻击面是 AI 调用、图片存储、数据库连接和 Worker 队列。建议按成本分层限制：
+
+- IP + Session + 账号三层限流；普通读接口较宽，图片上传、OCR、解析、Agent 动作分别设置更严的每分钟/每日额度。
+- 新注册账号先完成邮箱验证；异常频率才触发 CAPTCHA、短暂冷却或人工解锁，不让正常朋友承担验证码成本。
+- 限制请求体、图片数量/大小、单用户存储空间、并发 Job 数、单次模型调用次数和总超时；队列设置全局并发上限与熔断。
+- 数据库加唯一索引、外键、分页上限和连接池上限；过期匿名 Session、孤立附件和失败 Job 定期清理。
+- 记录 `user/session/IP/traceId/provider/duration/bytes` 等安全指标，但不记录密钥、图片 base64 或题面全文；对异常用户降速而不是直接删除数据。
+
+因此，“注册方便”与“后端安全”并不矛盾。推荐的体验是：游客立即可用，注册只在需要恢复数据时出现，昂贵能力按额度保护。
+
+### 建议的数据演进
+
+保留现有业务表的 `user_id`，扩展：
+
+- `users.kind`: `anonymous` / `registered`
+- `user_identities`: `user_id`、`provider`、`subject/email` 唯一索引、验证时间
+- `user_sessions`: 继续保存哈希 Token、过期时间和撤销时间
+- `usage_counters`（或按日聚合表）：按用户/IP 记录上传字节、Job、模型调用和失败次数
+
+匿名升级必须是事务：校验一次性凭据 → 锁定匿名 User → 合并/迁移资源 → 建立正式身份 → 轮换 Session。若邮箱已存在，不应静默合并两个用户的数据，而应要求用户明确选择登录已有账号或保留游客数据。
+
+## 二、LangGraph 建议：可以用，但要用在“有状态的教学编排”上
+
+不建议为了简历把当前每个动作简单包成一个 LangGraph 节点。现在的 `AgentDispatcher` 已经能完成显式动作路由、结构校验和有限修复，硬套图反而增加复杂度。
+
+最适合本项目的落点是 **单题自适应辅导图**，仍由 Go 掌握业务数据和最终写库，Python/LangGraph 只做受限推理编排：
+
+```text
+接收 Go 构建的 QuestionContext
+        ↓
+preflight（缺少作答/题面残缺/题型不支持）
+        ├─ needs_input → 返回需要用户补充什么
+        └─ assess_evidence（答案、解析、错因证据、历史提示）
+                ↓
+        choose_intervention（hint / diagnose / explain）
+                ↓
+        generate_structured_result
+                ↓
+        validate_domain
+          ├─ repair（最多一次）
+          ├─ needs_review
+          └─ completed
+```
+
+更能体现 LangGraph 价值的第二阶段是带用户反馈的短循环：
+
+```text
+评估当前理解 → 给第 1 级提示 → 等用户回答 → 判断是否掌握
+       ├─ 已掌握 → 总结并结束
+       ├─ 未掌握 → 第 2/3 级提示
+       └─ 证据不足 → 追问关键步骤
+```
+
+这个循环必须有硬边界：最多 3 次干预、总 deadline、可取消、上下文长度上限；“等待用户回答”是显式暂停点，不允许模型无限自主循环。Go 仍负责保存聊天、作答、学习状态和 proposal，LangGraph 不直接访问 MySQL，也不直接创建题目或修改成绩。
+
+### LangGraph 在简历上应该展示什么
+
+重点不是“用了某个框架”，而是能说明：
+
+- 为什么需要状态图：动作选择依赖题面完整度、答案证据和用户反馈；
+- 如何做人机协同：`needs_input`、`needs_review` 和人工确认是图上的合法终态；
+- 如何保证安全和成本：显式节点白名单、最大步数、超时、重试预算、结构化输出校验；
+- 如何与业务系统解耦：Go 传入受限上下文，Python 返回结果，最终持久化由 Go 执行。
+
+这比“增加一个自主 Agent 页面”更符合错题工作台，也更容易在面试中讲清楚工程取舍。
+
+## 三、推荐执行顺序
+
+1. 先完成游客限流、AI/存储额度和过期数据清理，暂不急着做完整注册页面。
+2. 增加邮箱 magic link 或单一 OAuth 的匿名升级闭环，并补跨用户/重复升级测试。
+3. 先把现有 Agent 评测和状态语义收口，再将 `AgentDispatcher` 内部重构为一个有限步数的 `QuestionTutorGraph`。
+4. 最后再加入“等待用户回答 → 继续提示”的短循环，用真实评测数据验证它确实改善了学习结果。
+
+---
+
+# 2026-09-12 项目进度复核与 Agent 下一阶段完善建议
+
+## 当前阶段判断
+
+- 项目已经从规划期进入 **MVP 功能收口与真实质量验证阶段**。图片/手动导入、OCR 结构化、题目管理与作答、AI 解析、题目追问、错题沉淀、练习与学习状态的主链路已有代码实现。
+- Go 业务入口、Python AI 服务和桌面三栏前端的边界基本符合既定架构；匿名会话隔离、异步 Job、taxonomy 自动落题、图片追问、相似题 proposal、主观题评分建议也已有实现。
+- P0 四类动作和 P1 三类能力已经具备类型化协议与 mock/契约测试，但当前更准确的结论是“工程链路可运行”，不是“真实 Agent 教学质量已达标”。
+- 工作区当前仍有一批未提交的工程清理和说明文档修改，应先形成一个可回退的干净提交，再开始下一轮 Agent 改造。
+
+## 本轮复核结果
+
+- Python：`python run_tests.py`，26 tests passed。
+- P0 离线 runner：读取 20 条案例，四动作 mock smoke 通过。
+- P1 离线 runner：读取 24 条案例，taxonomy / 相似题 / 主观题评分的少量 mock 契约检查通过。
+- Go：`go test ./...`、`go vet ./...` 通过。
+- 前端：3 suites / 4 tests 通过，TypeScript 检查与生产构建通过；仅有 React Router v7 future flag 和 Node `fs.F_OK` 既有警告。
+
+## 关键结论：Agent 目前最需要补的不是更多动作，而是真实质量闭环
+
+### P0：下一轮必须优先完成
+
+1. **把离线案例变成真正可执行的评测集。** 当前 `p0_cases.json`、`p1_cases.json` 的 20/24 条记录主要被 runner 计数，脚本没有逐例构造上下文、调用动作并校验 `expected` / `forbidden`。需要逐例执行，输出每例通过原因、失败证据和聚合指标，不能再把“案例文件存在”当作“案例已评测”。
+2. **建立真实 provider 小规模金标验收。** 先选 408 四科各 10～20 道、覆盖正常题和坏输入的人工核对集，分别测答案/解析一致性、错因证据、一级提示泄露率、taxonomy 大类准确性、相似题可解性、评分建议与 rubric 一致性。mock 与真实报告必须分开。
+3. **补 Agent 端到端测试。** 当前前端仅 4 个测试，没有覆盖 Agent 按钮、`needs_input` / `needs_review` / `failed`、proposal 确认/拒绝、图片追问失败重试和评分确认；Go 也缺少 proposal、主观题评分、过期指纹、重复确认、跨用户访问等服务/路由级测试。
+4. **修正主观题确认后的状态语义。** 当前人工确认分数后仍写 `GradingStatus=manual_required`、`Status=ungraded`，界面可能继续显示“待批改”。应明确 `ai_suggested`、`confirmed`、`manually_adjusted` 等状态，并决定确认后是否只记录分数，还是在明确规则下更新学习状态。
+5. **收紧动作入口边界。** 通用题目 Agent 接口当前也允许 `grade_subjective_answer`，但评分确认只存在于练习会话路径，容易产生无法完成确认的孤立 proposal。评分动作应只从带 session/orderIndex/answer fingerprint 的练习流程发起。
+
+### P1：提升“辅导效果”，而不是提升自主性
+
+1. **让提示形成真实三级递进。** 前端现在每次固定请求 `hintLevel=1`；需要按题目和当前会话记录已用层级，允许“再给一点提示”，并对 1/2/3 级分别设定答案泄露规则。
+2. **错因诊断先收集作答过程。** 只有最终答案时不应强判“概念混淆/条件遗漏”。可先追问用户思路或关键步骤，再区分知识缺口、审题、方法、计算和表达问题，并把证据片段与结论对应展示。
+3. **换种讲法支持用户指定卡点。** 当前前端把 focus 固定为“当前不理解的概念或步骤”；应允许用户选择概念、某一步或某个选项，并根据已有对话避免重复同一种解释。
+4. **增强相似题质量闸门。** 当前主要检查 schema、选项键、答案引用和简单的机械复制。还需要独立求解/规则复核、答案与解析一致性检查、与原题相似度上下限，以及确认前完整预览和可编辑能力。
+5. **增加轻量学习者上下文。** 不需要引入自主 Agent 平台；只需在 Go 侧汇总最近错因、掌握度、已用提示和偏好讲法，作为有界上下文传给 Python，用于控制解释深度和推荐难度。
+
+### P2：进入可部署阶段前补齐
+
+- 为 Agent 动作增加真正的总 deadline、取消传播、并发/频率限制和明确的重试后状态；当前主要是单次调用 timeout，最坏耗时可能随尝试次数累加。
+- 把 prompt 从代码字符串提取为可版本化模板，记录模型、promptVersion、输入版本、耗时、token 和人工采纳/驳回反馈，支持回归对比。
+- 增加真实运行监控：成功率、`needs_input`/`needs_review` 比例、provider 超时、降级率、提示泄露告警、proposal 采纳率和人工改分幅度。
+
+## 文档与 Agent 协作约定需要同步更新
+
+- `AGENTS.md` 仍把仓库描述为“早期规划阶段”，已经落后于当前 MVP 收口状态；应改为“实现已存在，修改前先跑基线并保护数据/迁移兼容”。
+- `README.md`、`ai-service/README.md`、`project.md`、`backend/API.md` 和评测案例之间存在口径漂移：例如 taxonomy 已改为自动应用和允许创建用户私有知识点标签，但部分说明/案例仍写“等待用户确认、不得创建标签”；主观题评分也仍有“后续扩展”的旧文案。
+- 后续要求 Agent 每次改动作契约时同时更新：Python schema、Go client/API、前端类型与状态、可执行评测案例、报告和顶层 README；其中任一项未同步，不视为完成。
+
+## 推荐执行顺序
+
+1. 整理并提交当前未提交改动，建立干净基线。
+2. 修正文档和评测案例的 taxonomy/评分状态口径。
+3. 把 44 条离线案例改造成逐例执行的评测 harness。
+4. 补 Go/前端 P0 端到端测试，并修复评分确认状态。
+5. 在有限预算下跑真实 408 金标集，形成第一份真实质量报告。
+6. 只有报告暴露出明确问题后，再迭代提示词、模型和三级提示/错因追问交互。
+
+---
+
+# 2026-09-10 前端标签页图标切换为 Husky 小狗 Logo
+
+## 本轮完成
+
+- 浏览器标签页 favicon、Apple touch icon 和 PWA Manifest 统一使用现有 `line-husky-nobackground.png`。
+- 删除不再引用的 CRA 默认 `favicon.ico`、`logo192.png`、`logo512.png`，不改变页面功能。
+- 运行前端测试、TypeScript 检查、ESLint 和生产构建确认图标资源可正常打包。
+
+---
+
+# 2026-09-10 第二轮项目清理：遗留资源、模板文档与评测脚本隔离
+
+## 本轮完成
+
+- 审计整个仓库的测试、评测和调试入口：正式 `*_test`、P0/P1 离线评测 runner 仍被当前代码或文档使用，继续保留；没有发现可安全删除的历史测试脚本。
+- 修正 `evals/run_p0_eval.py`、`evals/run_p1_eval.py` 的离线边界，未显式设置时强制使用 mock，避免本地 `.env` 触发真实 provider 请求；同时统一 P1 runner 的异步结构。
+- 删除未被引用的前端 CRA 遗留资源：`frontend/asset/` 下两张 Husky 图片、`frontend/src/logo.svg` 和无实际回调的 `reportWebVitals.ts`。
+- 修正前端测试的 Testing Library DOM 访问规范；清理 CRA 默认 README、HTML、Manifest 文案，并更新 `CLAUDE.md` 的过时状态描述。
+- 删除 `.gitignore` 中重复的 `**/__pycache__/` 规则；不触碰 `backend/uploads/` 本地用户上传数据。
+
+## 验收
+
+- Python：`python run_tests.py` 26 tests passed；P0 20 例、P1 24 例离线评测通过；Ruff 通过。
+- Go：`GOCACHE=../.gocache go test ./...`、`go vet ./...` 通过。
+- 前端：4 tests passed、TypeScript、ESLint、生产构建均通过；仅保留 React Router 既有 future flag 提示。
+
+---
+
+# 2026-09-10 项目工程清理：Python 静态规范与离线测试稳定性
+
+## 本轮完成
+
+- 清理 Python 未使用导入、无意义 `f` 前缀、单行条件语句和 lambda 风格问题；`ruff check app tests run_tests.py` 已通过。
+- mock 聊天延迟改为读取既有的 `LLM_MOCK_DELAY_SECONDS` 配置，不再硬编码 1 秒；生产 provider 分支和响应契约不变。
+- 增加 `ai-service/run_tests.py`，在未显式指定时默认使用 mock provider，避免本地 `.env` 让离线单测访问真实服务；同步更新根 README 和 AI 服务 README。
+- 保留现有业务边界、API、数据模型和前端行为，没有删除功能代码或生成物。
+
+## 验收
+
+- Python：`python run_tests.py`，26 tests passed；`python -m pytest -q`，26 passed。
+- Go：`go test ./...`、`go vet ./...` 通过。
+- 前端：`npm test -- --watchAll=false`、`npx tsc --noEmit` 通过；React Router 仍有既有升级提示，但不影响构建或测试。
+
+---
+
 # 2026-09-10 taxonomy 结果默认落题，标签输入取消候选菜单
 
 ## 本轮调整
