@@ -10,6 +10,7 @@ import (
 
 	"erro-notebook/backend/internal/integrations/ai"
 	"erro-notebook/backend/internal/services"
+	"erro-notebook/backend/pkg/response"
 	"github.com/gin-gonic/gin"
 )
 
@@ -21,6 +22,27 @@ func NewQuestionAIHandler(service *services.QuestionAIService) *QuestionAIHandle
 	return &QuestionAIHandler{
 		service: service,
 	}
+}
+
+func (h *QuestionAIHandler) ProviderStatus(c *gin.Context) {
+	result, err := h.service.ProviderStatus(c.Request.Context())
+	if err != nil {
+		response.Error(c, http.StatusBadGateway, "AI_STATUS_UNAVAILABLE", "无法读取 AI 服务配置状态")
+		return
+	}
+	response.OK(c, gin.H{
+		"text": gin.H{
+			"provider":   result.LLMBackend,
+			"model":      result.LLMModel,
+			"configured": result.LLMConfigured,
+		},
+		"vision": gin.H{
+			"provider":   result.VisionBackend,
+			"model":      result.VisionModel,
+			"configured": result.VisionConfigured,
+		},
+		"source": "server_env",
+	})
 }
 
 func (h *QuestionAIHandler) ParseImage(c *gin.Context) {

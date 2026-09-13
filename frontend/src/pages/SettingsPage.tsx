@@ -3,112 +3,43 @@ import { Link } from 'react-router-dom';
 import TopBar from '../components/TopBar';
 import SideNavigation from '../components/SideNavigation';
 import { SettingsIcon } from '../components/icons';
+import { requestJson } from '../utils';
 
-type ModelConfig = {
-  baseUrl: string;
-  apiKey: string;
-  model: string;
+type ProviderState = { provider: string; model?: string | null; configured: boolean };
+type ProviderSettings = { text: ProviderState; vision: ProviderState; source: 'server_env' | string };
+
+const emptySettings: ProviderSettings = {
+  text: { provider: 'unknown', model: null, configured: false },
+  vision: { provider: 'unknown', model: null, configured: false },
+  source: 'server_env',
 };
 
-type ApiSettings = {
-  textModel: ModelConfig;
-  visionModel: ModelConfig;
-};
-
-const STORAGE_KEY = 'erro-notebook:api-settings:v1';
-
-const emptySettings: ApiSettings = {
-  textModel: {
-    baseUrl: '',
-    apiKey: '',
-    model: '',
-  },
-  visionModel: {
-    baseUrl: '',
-    apiKey: '',
-    model: '',
-  },
-};
-
-function readSettings(): ApiSettings {
-  try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (!raw) return emptySettings;
-    const parsed = JSON.parse(raw) as Partial<ApiSettings>;
-    return {
-      textModel: { ...emptySettings.textModel, ...parsed.textModel },
-      visionModel: { ...emptySettings.visionModel, ...parsed.visionModel },
-    };
-  } catch {
-    return emptySettings;
-  }
-}
-
-function SettingsSection({
-  title,
-  description,
-  value,
-  onChange,
-}: {
-  title: string;
-  description: string;
-  value: ModelConfig;
-  onChange: (value: ModelConfig) => void;
-}) {
+function ProviderCard({ title, description, value }: { title: string; description: string; value: ProviderState }) {
   return (
     <section className="settings-card">
-      <div className="settings-card-header">
-        <h2>{title}</h2>
-        <p>{description}</p>
-      </div>
+      <div className="settings-card-header"><h2>{title}</h2><p>{description}</p></div>
       <div className="settings-form-grid">
-        <label className="form-field">
-          <span className="form-label">Base URL</span>
-          <input
-            className="form-input"
-            value={value.baseUrl}
-            placeholder="https://api.example.com/v1"
-            onChange={(event) => onChange({ ...value, baseUrl: event.target.value })}
-          />
-        </label>
-        <label className="form-field">
-          <span className="form-label">API Key</span>
-          <input
-            className="form-input"
-            type="password"
-            value={value.apiKey}
-            placeholder="输入 API Key"
-            autoComplete="off"
-            onChange={(event) => onChange({ ...value, apiKey: event.target.value })}
-          />
-        </label>
-        <label className="form-field">
-          <span className="form-label">Model</span>
-          <input
-            className="form-input"
-            value={value.model}
-            placeholder="例如 gpt-4.1-mini"
-            onChange={(event) => onChange({ ...value, model: event.target.value })}
-          />
-        </label>
+        <div className="form-field"><span className="form-label">Provider</span><div className="settings-readonly-value">{value.provider || '未配置'}</div></div>
+        <div className="form-field"><span className="form-label">Model</span><div className="settings-readonly-value">{value.model || '未配置'}</div></div>
+        <div className="form-field"><span className="form-label">API Key</span><div className="settings-readonly-value">{value.configured ? '已由服务端配置（不展示密钥）' : '未配置'}</div></div>
       </div>
     </section>
   );
 }
 
 export default function SettingsPage() {
-  const [settings, setSettings] = useState<ApiSettings>(emptySettings);
-  const [saved, setSaved] = useState(false);
+  const [settings, setSettings] = useState<ProviderSettings>(emptySettings);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
 
   useEffect(() => {
-    setSettings(readSettings());
+    let active = true;
+    requestJson<ProviderSettings>('/settings/ai')
+      .then((value) => { if (active) setSettings(value); })
+      .catch((err) => { if (active) setError(err instanceof Error ? err.message : '读取 AI 配置失败'); })
+      .finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
   }, []);
-
-  function handleSave() {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
-    setSaved(true);
-    window.setTimeout(() => setSaved(false), 2200);
-  }
 
   return (
     <div className="app-shell">
@@ -117,48 +48,18 @@ export default function SettingsPage() {
         <SideNavigation />
         <main className="settings-page">
           <header className="settings-header">
-            <div className="section-title">
-              <SettingsIcon size={20} />
-              <h1>设置</h1>
-            </div>
-            <Link className="outline-button" to="/">
-              返回工作台
-            </Link>
+            <div className="section-title"><SettingsIcon size={20} /><h1>设置</h1></div>
+            <Link className="outline-button" to="/">返回工作台</Link>
           </header>
-
           <div className="settings-content">
-            <div className="settings-intro">
-              <p>
-                没图片的题目、普通追问和文本解析走纯文本模型；包含图片的题目、OCR/视觉理解和图片题解析走多模态模型。
-              </p>
-            </div>
-
-            <SettingsSection
-              title="纯文本模型"
-              description="用于无图片题目、普通追问、文本解析等链路。"
-              value={settings.textModel}
-              onChange={(textModel) => {
-                setSettings((prev) => ({ ...prev, textModel }));
-                setSaved(false);
-              }}
-            />
-
-            <SettingsSection
-              title="多模态模型"
-              description="用于包含图片的题目、OCR/视觉理解、图片题解析等链路。"
-              value={settings.visionModel}
-              onChange={(visionModel) => {
-                setSettings((prev) => ({ ...prev, visionModel }));
-                setSaved(false);
-              }}
-            />
-
-            <div className="settings-actions">
-              <button className="primary-button" type="button" onClick={handleSave}>
-                保存设置
-              </button>
-              {saved ? <span className="save-feedback">已保存</span> : null}
-            </div>
+            <div className="settings-intro"><p>AI Provider 配置由当前部署实例的服务端环境变量管理。浏览器不保存、不上传、不回显 API Key；页面只展示脱敏后的配置状态。</p></div>
+            {loading ? <div className="empty-state">正在读取服务端配置...</div> : null}
+            {error ? <div className="global-toast is-error">{error}</div> : null}
+            {!loading ? <>
+              <ProviderCard title="纯文本模型" description="用于无图片题目、普通追问和文本解析。" value={settings.text} />
+              <ProviderCard title="多模态模型" description="用于图片 OCR、图形理解和图片题解析。" value={settings.vision} />
+              <div className="settings-actions"><span className="save-feedback">配置来源：{settings.source === 'server_env' ? '服务端环境变量 / secrets' : settings.source}</span></div>
+            </> : null}
           </div>
         </main>
       </div>

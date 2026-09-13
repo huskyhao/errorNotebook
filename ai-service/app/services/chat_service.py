@@ -9,6 +9,7 @@ from app.core.config import settings
 from app.schemas.chat import ChatRequest, ChatResponse
 from app.services.openai_client import OpenAICompatibleError, build_openai_client
 from app.services.vision_service import build_multimodal_client
+from app.services.question_type_prompts import question_type_guidance
 
 logger = logging.getLogger("app.services.chat_service")
 
@@ -34,6 +35,7 @@ SYSTEM_PROMPT = """你是 ErroNotebook 的 AI 答疑助手，正在辅导学生�
 5. 直接输出自然语言，不要输出 JSON 或 markdown 代码块。
 6. 回答应简洁有条理，但必要时可以展开详细讲解。
 7. 如果用户问的是某个选项为什么对/错，请先给出结论再逐步分析。
+8. 按当前题型回答：多选题不能只解释一个选项；填空题按空位顺序；主观题、简答题、论述题和计算题优先解释作答结构、关键步骤和评分点。
 """
 
 class ChatService:
@@ -165,4 +167,4 @@ class ChatService:
             options_section=options_section,
             user_answer=user_answer,
             analysis_section=analysis_section,
-        ) + attachment_note
+        ) + "\n## 题型专用约定\n" + question_type_guidance(q.questionType if not isinstance(q, dict) else q.questionType) + attachment_note

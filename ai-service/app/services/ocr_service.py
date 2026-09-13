@@ -92,7 +92,6 @@ class OCRService:
                 ocr_ms=ocr_ms,
                 parser_ms=structured.parser_ms,
                 warnings=structured.warnings,
-                raw_text=structured.raw_text,
                 stem_len=len(structured.structured_question.stem),
                 has_diagram=sq.metadata.hasDiagram,
                 diagram_desc_len=len(sq.diagramDescription) if sq.diagramDescription else 0,
@@ -103,11 +102,8 @@ class OCRService:
                 "ocr.result",
                 trace_id=trace_id,
                 question_id=question_id,
-                raw_text=structured.raw_text,
-                stem=structured.structured_question.stem,
                 question_type=structured.structured_question.questionType,
                 options_count=len(structured.structured_question.options),
-                suggested_answer=structured.structured_question.suggestedAnswer,
                 diagram_description=structured.structured_question.diagramDescription,
             )
         )

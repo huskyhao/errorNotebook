@@ -6,6 +6,7 @@ from enum import Enum, auto
 
 from app.schemas.question import OptionItem, QuestionAsset, QuestionMetadata, StructuredQuestion
 from app.services.ocr_backends import OCRBackendResult, has_diagram_hint
+from app.services.question_type_prompts import infer_question_type
 
 
 # Matches option lines with common OCR noise, such as "OA.", "O B.5" or "D。以上都不正确".
@@ -119,8 +120,8 @@ class QuestionStructurer:
         if state == _ParseState.PENDING_OPTION:
             option_items.append(self._build_option(pending_key, pending_content))
 
-        question_type = "single_choice" if option_items else "subjective"
         option_items = [item for item in option_items if item.content.strip()]
+        question_type = infer_question_type("\n".join(stem_lines), raw_text, bool(option_items))
 
         if len(option_items) == 0:
             warnings.append("options_not_detected")
@@ -154,7 +155,7 @@ class QuestionStructurer:
 
         structured_question = StructuredQuestion(
             stem="\n".join(stem_lines).strip(),
-            questionType=question_type if question_type in {"single_choice", "subjective"} else "unknown",
+            questionType=question_type,
             options=option_items,
             assets=assets,
             suggestedAnswer=None,

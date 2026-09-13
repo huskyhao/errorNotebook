@@ -44,3 +44,11 @@ func (s *QuestionAIService) AnalyzeQuestion(
 
 	return result, nil
 }
+
+func (s *QuestionAIService) ProviderStatus(ctx context.Context) (*ai.HealthResponse, error) {
+	result, err := s.aiClient.Health(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("read ai provider status: %w", err)
+	}
+	return result, nil
+}

@@ -139,6 +139,9 @@ func (s *QuestionService) processAnalysisJob(ctx context.Context, job *models.Jo
 	if err != nil {
 		return fmt.Errorf("call ai service: %w", err)
 	}
+	if isPlaceholderAnalysisAnswer(question.QuestionType, resp.Analysis.Answer) {
+		return fmt.Errorf("validate analysis answer: subjective answer is a placeholder")
+	}
 	suggestion := s.validateTaxonomySuggestion(resp.Analysis.TaxonomySuggestion)
 	if suggestion != nil {
 		s.ensureSuggestedTags(suggestion)
@@ -193,6 +196,32 @@ func (s *QuestionService) processAnalysisJob(ctx context.Context, job *models.Jo
 		s.updateBatchItemByQuestion(job.QuestionID, "completed", "completed", "")
 	}
 	return nil
+}
+
+func isPlaceholderAnalysisAnswer(questionType string, answer string) bool {
+	switch questionType {
+	case models.QuestionTypeSubjective, models.QuestionTypeShortAnswer, models.QuestionTypeEssay, models.QuestionTypeCalculation:
+	default:
+		return false
+	}
+	compact := strings.ToLower(strings.TrimSpace(answer))
+	replacer := strings.NewReplacer(
+		" ", "", "\t", "", "\r", "", "\n", "", "，", "", "。", "", ",", "", ".", "",
+		"：", "", ":", "", "；", "", ";", "", "！", "", "!", "", "？", "", "?", "",
+	)
+	compact = replacer.Replace(compact)
+	if compact == "" {
+		return false
+	}
+	for _, marker := range []string{
+		"参考答案见解析", "答案见解析", "详见解析", "见下文解析", "见后续解析",
+		"待人工核对", "待补充", "暂无参考答案", "自行作答",
+	} {
+		if strings.Contains(compact, marker) {
+			return true
+		}
+	}
+	return compact == "略" || compact == "无" || compact == "未知" || compact == "无法确定"
 }
 
 func aiAnalyzeRequest(question *models.Question, warnings []string, categoryCandidates []string, tagCandidates []string) ai.AnalyzeQuestionRequest {

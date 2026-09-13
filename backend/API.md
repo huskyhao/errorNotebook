@@ -56,6 +56,22 @@ Go 不创建或校验用户、账号、登录态、Cookie 或浏览器 session�
 
 Python 服务只返回结构化 JSON，不直接写业务库。
 
+### 1.1 AI Provider 状态
+
+`GET /api/v1/settings/ai` 由 Go 读取 Python `/internal/v1/health` 的脱敏配置状态：
+
+```json
+{
+  "data": {
+    "text": { "provider": "openai_compatible", "model": "模型名", "configured": true },
+    "vision": { "provider": "not_configured", "model": null, "configured": false },
+    "source": "server_env"
+  }
+}
+```
+
+API Key 只允许通过 AI 服务端 `.env` 或 secrets 注入，永不返回原文、URL 或日志。设置页是只读状态页，不提供浏览器填写、`localStorage` 保存或前端直连 Python。
+
 ## 2. 题目接口
 
 ### 2.1 单题导入

@@ -14,4 +14,9 @@ async def health() -> HealthResponse:
         status="ok",
         ocrBackend=settings.ocr_backend,
         llmBackend="openai_compatible" if settings.openai_enabled else settings.llm_backend,
+        llmConfigured=settings.openai_enabled,
+        llmModel=settings.openai_model or None,
+        visionBackend="openai_compatible" if settings.vision_enabled else "not_configured",
+        visionConfigured=settings.vision_enabled,
+        visionModel=settings.vision_model if settings.vision_enabled else None,
     )

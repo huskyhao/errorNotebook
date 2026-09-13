@@ -29,6 +29,10 @@ class TaxonomySuggestionReason(BaseModel):
 
 class AnalysisPayload(BaseModel):
     answer: str
+    answerFormat: str = "free_text"
+    blankAnswers: list[str] = Field(default_factory=list)
+    scoringPoints: list[str] = Field(default_factory=list)
+    rubric: list[str] = Field(default_factory=list)
     summary: str
     knowledgePoints: list[str] = Field(default_factory=list)
     taxonomySuggestion: TaxonomySuggestion | None = None

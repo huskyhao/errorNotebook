@@ -929,6 +929,11 @@ button {
   font-weight: 600;
 }
 
+.analysis-answer-content {
+  margin-top: 6px;
+  color: var(--color-text);
+}
+
 .taxonomy-suggestion {
   display: flex;
   flex-wrap: wrap;
@@ -1588,6 +1593,16 @@ button {
   font-size: 16px;
 }
 
+.answer-row--long {
+  align-items: flex-start;
+  flex-direction: column;
+}
+
+.answer-row-content {
+  width: 100%;
+  color: var(--color-text);
+}
+
 .analysis-panel {
   margin-top: 24px;
   background: transparent;
@@ -2140,6 +2155,18 @@ button {
   grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) minmax(0, 0.8fr);
   gap: 12px;
   padding-top: 16px;
+}
+
+.settings-readonly-value {
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  color: var(--color-text-secondary);
+  background: var(--color-surface-subtle);
+  font-size: 13px;
 }
 
 .settings-actions {

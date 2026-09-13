@@ -9,7 +9,7 @@ type Question struct {
 	Category            *Category        `gorm:"foreignKey:CategoryID" json:"-"`
 	Stem                string           `gorm:"type:text;not null" json:"stem"`
 	QuestionType        string           `gorm:"type:varchar(64);not null" json:"questionType"`
-	CorrectAnswer       *string          `gorm:"type:varchar(255)" json:"correctAnswer,omitempty"`
+	CorrectAnswer       *string          `gorm:"type:text" json:"correctAnswer,omitempty"`
 	UserAnswer          *string          `gorm:"type:text" json:"userAnswer,omitempty"`
 	OCRStatus           string           `gorm:"column:ocr_status;type:varchar(64);not null;default:'uploaded'" json:"ocrStatus"`
 	AnalysisStatus      string           `gorm:"column:analysis_status;type:varchar(64);not null;default:'queued'" json:"analysisStatus"`

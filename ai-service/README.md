@@ -60,6 +60,8 @@ pip install -r requirements.txt
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8001
 ```
 
+运行日志同时输出到启动终端和 `app/.log/<UTC 启动时间>.log`。解析日志只记录 trace、题目 ID、状态、耗时、token 和内容长度；不记录 API Key、完整题干或模型答案。结构或答案完整性校验失败时可检索 `analysis.validation_retry` 与 `analysis.validation_failed`。
+
 启动后访问：
 
 * `http://localhost:8001/docs`
@@ -154,6 +156,18 @@ curl.exe -X POST "http://localhost:8001/internal/v1/debug/analyze/mock-question"
   }
 }
 ```
+
+## 八类题型 Prompt 与响应约定
+
+OCR 结构化会在证据足够时识别 `single_choice`、`multiple_choice`、`true_false`、`fill_blank`、`subjective`、`short_answer`、`essay`、`calculation`；无法确认时保留人工校准状态。解析、追问和 Agent 都会注入题型专用约定，不把所有题型套成单选题：
+
+* 单选：`answer` 为一个选项 key。
+* 多选：`answer` 为逗号分隔的多个选项 key，`optionAnalysis` 逐项解释。
+* 判断：`answer` 为 `true`/`false`。
+* 填空：`answer` 按空位顺序分号分隔，`blankAnswers` 保存逐空答案。
+* 主观、简答、论述、计算：`answer` 为参考结论，`steps`、`scoringPoints`、`rubric` 保存解题或评分依据；不直接宣称最终判分。
+
+统一解析响应仍包含 `summary`、`knowledgePoints`、`steps`、`optionAnalysis`、`pitfalls` 和 `reviewAdvice`。没有选项的题型 `optionAnalysis` 应为空；Go 负责保存和展示，Python 不写业务库。
 
 调用示例：
 

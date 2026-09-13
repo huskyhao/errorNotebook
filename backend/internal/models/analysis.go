@@ -7,7 +7,7 @@ type Analysis struct {
 	QuestionID                    int64     `gorm:"not null;index" json:"questionId"`
 	JobID                         *string   `gorm:"column:job_id;type:varchar(64);uniqueIndex" json:"-"`
 	Provider                      string    `gorm:"type:varchar(128);not null" json:"provider"`
-	Answer                        *string   `gorm:"type:varchar(255)" json:"answer,omitempty"`
+	Answer                        *string   `gorm:"type:text" json:"answer,omitempty"`
 	ContentJSON                   string    `gorm:"column:content_json;type:json;not null" json:"contentJson"`
 	SourceQuestionFingerprint     string    `gorm:"column:source_question_fingerprint;type:varchar(128)" json:"sourceQuestionFingerprint,omitempty"`
 	TaxonomyCandidateSnapshotJSON string    `gorm:"column:taxonomy_candidate_snapshot_json;type:json" json:"-"`

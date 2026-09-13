@@ -119,10 +119,10 @@ export default function ReasoningCenter({
                   <span className="analysis-card-time">{formatTime(analysis.createdAt)}</span>
                 </div>
                 <div className="analysis-card-copy">
-                  <p>
-                    <strong>答案：</strong>
-                    {analysis.content.answer || analysis.answer || '暂无'}
-                  </p>
+                  <strong>答案：</strong>
+                  <div className="analysis-answer-content">
+                    <MarkdownRenderer content={analysis.content.answer || analysis.answer || '暂无'} />
+                  </div>
                   <p>{analysis.content.summary || '暂无解析摘要'}</p>
                   {question?.categoryId && analysis.content.taxonomySuggestion && (analysis.content.taxonomySuggestion.categoryName || analysis.content.taxonomySuggestion.tagNames?.length) ? (
                     <div className="taxonomy-suggestion" aria-label="AI 分类标签建议">

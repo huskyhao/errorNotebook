@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { requestJson, buildConversation } from '../utils';
-import type { QuestionItem, AnalysisItem, ChatMessage, TagItem, CategoryTreeNode, BatchImportResult, BatchProgress, OptionItem, LearningState, AgentActionName, AgentActionResponse } from '../types';
+import type { QuestionItem, AnalysisItem, ChatMessage, TagItem, CategoryTreeNode, BatchImportResult, BatchProgress, JobItem, OptionItem, LearningState, AgentActionName, AgentActionResponse } from '../types';
 import TopBar from '../components/TopBar';
 import SideNavigation from '../components/SideNavigation';
 import QuestionSidebar from '../components/QuestionSidebar';
@@ -161,7 +161,9 @@ export default function QuestionWorkbenchPage() {
             return;
           }
           if (q.ocrStatus === 'failed' || q.analysisStatus === 'failed') {
-            setError(q.ocrStatus === 'failed' ? 'OCR 识别失败，可重试识别或手动校准' : 'AI 解析失败，可重试解析');
+            const job = await requestJson<JobItem>(`/jobs/${jobId}`, { signal: controller.signal }).catch(() => null);
+            const fallback = q.ocrStatus === 'failed' ? 'OCR 识别失败，可重试识别或手动校准' : 'AI 解析失败，可重试解析';
+            setError(job?.errorMessage ? `${fallback}：${job.errorMessage}` : fallback);
             return;
           }
           await waitWithAbort(delayMs, controller.signal);
@@ -615,23 +617,59 @@ export default function QuestionWorkbenchPage() {
 
   async function handleSelectOption(optionKey: string) {
     if (!selectedQuestion) return;
-    setSelectedOptions((prev) => ({ ...prev, [selectedQuestion.id]: optionKey }));
+    const questionId = selectedQuestion.id;
+    const nextAnswer = selectedQuestion.questionType === 'multiple_choice'
+      ? (() => {
+          const current = new Set((selectedOptions[questionId] ?? '').split(',').map((item) => item.trim()).filter(Boolean));
+          if (current.has(optionKey)) current.delete(optionKey); else current.add(optionKey);
+          return Array.from(current).sort().join(',');
+        })()
+      : optionKey;
+    setSelectedOptions((prev) => ({ ...prev, [questionId]: nextAnswer }));
+    if (!nextAnswer) return;
     setSubmittingAnswer(true);
     try {
-      await requestJson<QuestionItem>(`/questions/${selectedQuestion.id}/answer`, {
+      const updated = await requestJson<QuestionItem>(`/questions/${questionId}/answer`, {
         method: 'POST',
-        body: JSON.stringify({ userAnswer: optionKey }),
+        body: JSON.stringify({ userAnswer: nextAnswer }),
       });
+      setSelectedQuestion(updated);
+      setQuestions((prev) => prev.map((item) => item.id === questionId ? updated : item));
     } catch (err) {
-      console.log('[Detail] 提交答案失败:', err);
+      setError(err instanceof Error ? err.message : '提交答案失败');
     } finally {
       setSubmittingAnswer(false);
     }
     setPracticeMode((prev) => {
       const next = { ...prev };
-      delete next[selectedQuestion.id];
+      delete next[questionId];
       return next;
     });
+  }
+
+  async function handleSubmitTextAnswer(answer: string) {
+    if (!selectedQuestion || !answer.trim()) return;
+    const questionId = selectedQuestion.id;
+    setSubmittingAnswer(true);
+    setError('');
+    try {
+      const updated = await requestJson<QuestionItem>(`/questions/${questionId}/answer`, {
+        method: 'POST',
+        body: JSON.stringify({ userAnswer: answer.trim() }),
+      });
+      setSelectedQuestion(updated);
+      setQuestions((prev) => prev.map((item) => item.id === questionId ? updated : item));
+      setSelectedOptions((prev) => ({ ...prev, [questionId]: answer.trim() }));
+      setPracticeMode((prev) => {
+        const next = { ...prev };
+        delete next[questionId];
+        return next;
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '提交答案失败');
+    } finally {
+      setSubmittingAnswer(false);
+    }
   }
 
   async function handleDeleteQuestion() {
@@ -865,6 +903,7 @@ export default function QuestionWorkbenchPage() {
           showAnswer={!practiceMode[selectedQuestion?.id ?? 0]}
           userSelectedOption={selectedOptions[selectedQuestion?.id ?? 0] ?? null}
           onSelectOption={handleSelectOption}
+          onSubmitTextAnswer={handleSubmitTextAnswer}
           onToggleAnswer={() => {
             const qid = selectedQuestion?.id;
             if (!qid) return;

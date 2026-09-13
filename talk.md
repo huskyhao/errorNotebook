@@ -1,3 +1,117 @@
+# 2026-09-14 主观题 103 解析失败诊断与日志补强
+
+## 诊断结论
+
+- 题目 103 的 OCR 已完成；analyze Job `analyze_1789321470135462600` 在 3 次尝试中均已获得 AI 结果，但写入 `analyses` 时失败：`Error 1406 (22001): Data too long for column 'answer' at row 1`。
+- 当前运行中 MySQL 的 `analyses.answer` 与 `questions.correct_answer` 仍是 `varchar(255)`，说明上一轮改为 `text` 的 Go 模型尚未通过服务重启执行 AutoMigrate。由于解析记录从未成功插入，查询 `/questions/103/analysis` 返回 `ANALYSIS_NOT_FOUND` 是后续现象，不是根因。
+- 处理顺序确定为：重启 Go 服务执行字段迁移，确认两列为 `text`，再重试上述失败 Job；无需重新 OCR 或再次上传图片。
+
+## 日志与前端改进
+
+- Python 文件日志此前在 Uvicorn 已预装 logging handler 时可能因 `basicConfig` 不生效而出现空文件；现已强制安装终端与文件 handler，运行日志写入 `ai-service/app/.log/<UTC 启动时间>.log`。
+- 解析结构或答案完整性失败现在记录 `analysis.validation_retry` / `analysis.validation_failed` 及安全错误码，不记录完整题干、答案或 API Key。
+- 单题导入轮询遇到失败时，前端会读取对应 Job 并展示 `errorMessage`，不再只显示笼统的“AI 解析失败”。
+
+## 验证
+
+- Python mock 隔离环境 33/33 通过；Go `go test ./...`、`go vet ./...` 通过；前端 5/5 测试及生产构建通过。
+
+# 2026-09-14 主观题完整参考答案修复
+
+## 本轮结论
+
+- 已确认主观题返回 `“参考答案见解析”` 的根因：解析链路只做 Pydantic/JSON 结构校验，Prompt 仅要求“参考结论”，没有验证 `answer` 是否为可独立阅读的完整作答。
+- 主观题、简答题、论述题和计算题的 `answer` 现在禁止使用“见解析、略、待补充、待人工核对”等占位语；题干或评分点明确要求代码/伪代码时，答案必须包含代码证据。
+- 文本模型首次输出不完整时会在既有调用预算内自动修复一次；仍不合格则返回 `INVALID_OUTPUT`。视觉模型输出不合格时会走既有 OCR 文本模型降级；Go worker 再做一层占位答案拦截，避免错误结果入库。
+- `questions.correct_answer` 与 `analyses.answer` 从 `varchar(255)` 改为 `text`，由现有 GORM AutoMigrate 在服务启动时迁移，支持保存带公式、长文本和代码的主观答案。
+- 工作台的 AI 答案和题目正确答案改用 Markdown 渲染，主观答案编辑框改为多行文本框；单选题仍使用原有短答案展示和交互。
+
+## 验证结果与使用说明
+
+- Python mock 隔离环境全量测试：33/33 通过，其中新增占位语拒绝、代码要求校验、自动修复重试回归用例。
+- Go `go test ./...`、`go vet ./...` 通过，新增 worker 占位答案防御测试。
+- 前端 4 个测试套件、5 个测试通过，生产构建通过；仅有既有 React Router v7 future flag 提示。
+- 已生成的旧解析不会被静默改写；部署并重启 Go/Python 服务后，对旧题点击“重新解析”即可生成并覆盖完整参考答案，同时启动时会把答案列迁移为 `text`。
+- 本轮没有调用真实付费 Provider；真实模型质量仍需用同一道题执行一次“重新解析”验收。
+
+# 2026-09-14 非单选题链路与 Provider 设置审查
+
+## 本轮结论
+
+- 原设置页把 API Key、Base URL 和模型写入浏览器 `localStorage`，后端和 Python 从未读取，因此“可保存”不等于生效；本轮改为只读 Provider 状态页，由 Go 读取 Python 健康检查结果，密钥继续只从服务端 `.env`/secrets 注入。
+- 设置接口只返回 provider、model、configured 和 `source=server_env`，不返回密钥原文或后四位；Go 对 Python 非 2xx 响应不再透传原始响应体，降低敏感信息进入前端/日志的风险。
+- OCR 规则解析、解析 Prompt、追问 Prompt 和 Agent Prompt 已增加八类题型专用约定：多选答案为多个选项 key，判断答案为 `true/false`，填空增加 `blankAnswers`，主观/简答/论述/计算增加 `scoringPoints` 与 `rubric`。
+- 工作台详情区补齐多选组合答案、判断题无选项兜底、填空/主观/简答/论述/计算文本作答及非选项解析展示；单选仍沿用原即时选择链路。
+
+## 验证结果与边界
+
+- Python `python -m pytest -q`：30/30 通过；Go `go test ./...`：通过；前端 `npm test -- --watchAll=false --runInBand`：4 个测试套件、5 个测试通过；`npm run build`：通过，仅保留 React Router 既有升级提示。
+- 真实 provider/API Key 是否可用仍取决于本机服务端环境变量，以上测试不替代真实模型质量验收。
+- 暂不做浏览器端 API Key 保存、用户级密钥加密存储、在线测试连接或账号绑定；这些与当前单实例服务端配置边界不一致。
+
+# 2026-09-13 全项目复核与下一阶段建议：完成单实例 MVP 真实可用性收口
+
+## 当前阶段判断
+
+项目已经完成了单题导入、异步 OCR/解析、人工校准、作答、题目追问、错因归纳、分类标签、推荐练习、学习统计和错题归档的主要代码链路，不应再按“早期规划项目”推进。下一阶段的核心不是继续增加页面或 Agent 动作，而是把现有能力变成安全、可验证、可部署的完整产品。
+
+本轮基线验证：
+
+- Go `go test ./...` 通过，`go vet ./...` 通过。
+- Python 26 个测试通过。
+- 前端 3 个测试套件、4 个测试通过，生产构建通过。
+- P0 20 例、P1 24 例评测数据可以加载，但当前 runner 只执行少量通用 mock smoke，不是逐例质量评测，也不代表真实 Provider 效果。
+
+## 复核发现的优先问题
+
+1. 设置页当前把文本模型和视觉模型的 API Key 明文保存到浏览器 `localStorage`，但这些配置没有接入 Go/Python，因此既不生效，也违背“Provider Key 只由服务端 `.env` 或 secrets 管理”的单实例边界。
+2. 主观题采用 AI 建议分数后，数据库仍写入 `GradingStatus=manual_required`、`Status=ungraded`，前端继续表现为“待批改”，确认动作没有形成终态。
+3. 自动化测试结构不均衡：前端只有 4 个组件/工具测试，没有真实浏览器闭环；Go 的 handler、repository、迁移和主要事务缺少集成测试；当前评测脚本没有逐条执行 `p0_cases.json` / `p1_cases.json` 的 expected/forbidden 约束。
+4. 项目文档仍有旧口径：`AGENTS.md` 仍写“早期规划阶段”和用户/鉴权职责，`project.md`、`backend/API.md` 仍残留“当前用户可见”“越权”等多用户表述。
+5. 当前没有 Docker Compose、服务健康依赖、数据卷/备份说明和 CI，自部署仍依赖手工配置三个服务。
+6. `backend/internal/services/question_service.go`、`frontend/src/pages/QuestionWorkbenchPage.tsx` 和 `frontend/src/App.css` 已经偏大；在补齐行为测试后应按导入、任务轮询、题目编辑、Agent 动作和页面区域拆分，降低后续修改风险。
+
+## 推荐下一阶段 Goal
+
+建议下一阶段命名为：`完成 ErroNotebook 单实例 MVP 的安全配置、真实验收与自部署收口`。
+
+### P0：先修正确性和配置安全
+
+1. 移除设置页 API Key 输入和 `localStorage` 持久化。设置页改为读取 Go 暴露的只读 Provider 状态，仅展示文本/视觉 Provider、模型、是否配置和 mock/real 状态；Key 继续由服务端 `.env` 或 Docker secrets 注入，不返回前端。
+2. 修复主观题评分状态：至少区分 `manual_required`、`ai_suggested`、`confirmed`、`manually_adjusted`；确认后刷新做题结果并停止显示“待批改”。是否更新学习状态必须有明确规则，不能因 AI 分数自动推断掌握度。
+3. 将 CORS 改为环境变量允许列表，生产模式不再反射任意 Origin；Go 中用于调试的 `/api/v1/internal/ai/*` 应可通过配置关闭或限制为本机/内部网络。
+4. 同步 `AGENTS.md`、`project.md`、`backend/API.md`、README 和页面文案，彻底统一为单实例单租户、无注册登录、Provider 服务端配置。
+
+### P1：建立真实质量和浏览器闭环
+
+1. 将 P0/P1 runner 改成逐例执行：每一例构造真实 `QuestionContext`，执行对应 action，校验 expected/forbidden，输出通过率、失败案例、provider/model、耗时和 token；mock 与真实结果分开报告。
+2. 建立 10～20 道获授权的 408 金标样例，覆盖四门学科、选择题、计算题、残缺 OCR、含图题和主观题。有限预算运行真实 OCR/LLM，人工记录题干恢复准确性、答案正确性、解析可用性、taxonomy 命中、耗时和失败原因。
+3. 增加最小 Playwright 端到端测试，至少覆盖：图片导入与轮询、OCR 待校准、解析完成、切题不串数据、追问、失败重试、创建练习、提交结果、主观题确认、归档筛选。
+4. 为 Go 增加测试数据库上的路由/事务测试，重点覆盖迁移幂等、分类标签去重、Job 重试与租约、proposal 重复确认/过期、主观题确认状态和删除关联完整性。
+
+### P2：完成自部署交付
+
+1. 增加前端、Go、Python Dockerfile 与根目录 `docker-compose.yml`，提供 MySQL、数据卷、健康检查、启动依赖和内部网络；Python 默认不直接暴露公网。
+2. 增加 GitHub Actions，固定执行 Python 测试、Go test/vet、前端测试/构建和离线评测。
+3. README 补最短启动、Provider 配置、数据备份/恢复、日志查看、升级迁移和停止服务说明。
+4. 在 E2E 与集成测试保护下拆分超大文件，不在测试建立前做大规模重构。
+
+## 完成标准
+
+- 浏览器不保存或回显任何 Provider Key，设置页展示的状态与实际后端配置一致。
+- 主观题人工采用评分后进入明确终态，刷新页面后状态和分数保持一致。
+- 真实 408 样例有可复现报告，明确区分真实、mock 和未验证项。
+- Playwright 能自动跑通核心闭环，Go 关键事务有集成测试。
+- `docker compose up` 可以启动完整系统，健康检查、数据卷和备份步骤可复现。
+- 全部文档不再残留登录、用户隔离或前端保存 API Key 的旧口径。
+
+## 暂不建议做
+
+- 暂不引入 LangGraph、向量库、知识图谱、社区、分享或更多微服务。
+- 暂不继续增加 Agent 动作数量；先用真实评测确认现有提示、错因、相似题和主观题评分的质量瓶颈。
+- 暂不迁移 Vite/Tailwind 或重写视觉体系；现有前端能构建，优先补行为测试和真实链路。
+
+---
 # 2026-09-12 进一步纠偏：移除用户体系，收敛为单实例单租户
 
 ## 对需求的准确理解

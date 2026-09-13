@@ -24,6 +24,10 @@ def setup_logging() -> None:
             logging.StreamHandler(),
             logging.FileHandler(log_path, encoding="utf-8"),
         ],
+        # Uvicorn installs handlers before importing the application. Without
+        # force=True, basicConfig becomes a no-op and runtime requests only
+        # appear in the launch terminal instead of the intended log file.
+        force=True,
     )
 
 

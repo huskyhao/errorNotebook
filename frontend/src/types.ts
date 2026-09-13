@@ -58,6 +58,10 @@ export type AnalysisItem = {
   answer?: string | null;
   content: {
     answer?: string;
+    answerFormat?: string;
+    blankAnswers?: string[];
+    scoringPoints?: string[];
+    rubric?: string[];
     analysis?: string;
     summary?: string;
     knowledgePoints?: string[];
@@ -106,6 +110,18 @@ export type BatchImportResult = {
 export type BatchProgress = BatchImportResult & {
   completed: number;
   failed: number;
+};
+
+export type JobItem = {
+  jobId: string;
+  questionId: number;
+  type: string;
+  status: string;
+  attempts: number;
+  maxAttempts: number;
+  processingStage?: string;
+  errorCode?: string | null;
+  errorMessage?: string | null;
 };
 
 export type CategoryTreeNode = {

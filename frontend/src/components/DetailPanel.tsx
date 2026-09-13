@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { analysisStatusLabel, cx, ocrStatusLabel, questionTypeLabel, QUESTION_TYPE_OPTIONS } from '../utils';
 import type { QuestionItem, AnalysisItem, DetailOption, AnalysisSection, CategoryTreeNode, TagItem, OptionItem } from '../types';
 import {
@@ -17,6 +17,7 @@ import {
 import FavoriteButton from './FavoriteButton';
 import CategorySelector from './CategorySelector';
 import TagEditor from './TagEditor';
+import MarkdownRenderer from './MarkdownRenderer';
 
 interface DetailPanelProps {
   question: QuestionItem | null;
@@ -39,6 +40,7 @@ interface DetailPanelProps {
   showAnswer: boolean;
   userSelectedOption: string | null;
   onSelectOption: (key: string) => void;
+  onSubmitTextAnswer: (answer: string) => void;
   onToggleAnswer: () => void;
   submittingAnswer: boolean;
   categories: CategoryTreeNode[];
@@ -69,6 +71,7 @@ export default function DetailPanel({
   showAnswer,
   userSelectedOption,
   onSelectOption,
+  onSubmitTextAnswer,
   onToggleAnswer,
   submittingAnswer,
   categories,
@@ -77,6 +80,11 @@ export default function DetailPanel({
   onCategoryChange,
   onTagsChange,
 }: DetailPanelProps) {
+  const [practiceTextAnswer, setPracticeTextAnswer] = useState('');
+
+  useEffect(() => {
+    setPracticeTextAnswer(question?.userAnswer ?? '');
+  }, [question?.id, question?.userAnswer]);
   const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({
     steps: true,
     options: false,
@@ -87,15 +95,28 @@ export default function DetailPanel({
     setExpandedSections((prev) => ({ ...prev, [key]: !prev[key] }));
   }
 
+  const questionType = question?.questionType ?? '';
+  const textQuestion = ['fill_blank', 'subjective', 'short_answer', 'essay', 'calculation'].includes(questionType);
+  const draftTextQuestion = ['fill_blank', 'subjective', 'short_answer', 'essay', 'calculation'].includes(draftQuestionType);
+  const multiChoice = questionType === 'multiple_choice';
+  const displayOptions = useMemo(() => (
+    questionType === 'true_false' && !(question?.options?.length)
+      ? [{ key: 'true', content: '正确' }, { key: 'false', content: '错误' }]
+      : (question?.options ?? [])
+  ), [question?.options, questionType]);
+  const optionCount = question?.options?.length ?? 0;
+  const selectedAnswers = useMemo(() => new Set((userSelectedOption ?? '').split(',').map((value) => value.trim()).filter(Boolean)), [userSelectedOption]);
+  const correctAnswers = useMemo(() => new Set((question?.correctAnswer ?? '').split(/[,，、;；\s]+/).map((value) => value.trim()).filter(Boolean)), [question?.correctAnswer]);
+
   const detailOptions: DetailOption[] = useMemo(
     () =>
-      (question?.options ?? []).map((option) => ({
+      displayOptions.map((option) => ({
         key: option.key,
         content: option.content,
-        isCorrect: showAnswer && question?.correctAnswer === option.key,
-        isWrong: showAnswer && userSelectedOption === option.key && question?.correctAnswer !== option.key,
+        isCorrect: showAnswer && correctAnswers.has(option.key),
+        isWrong: showAnswer && selectedAnswers.has(option.key) && !correctAnswers.has(option.key),
       })),
-    [question, showAnswer, userSelectedOption],
+    [correctAnswers, displayOptions, selectedAnswers, showAnswer],
   );
 
   const analysisSections: AnalysisSection[] = useMemo(() => {
@@ -117,7 +138,7 @@ export default function DetailPanel({
       },
       {
         key: 'options',
-        title: '选项分析',
+        title: optionCount ? '选项分析' : '答案核对',
         icon: <CompassIcon />,
         expanded: expandedSections['options'] ?? false,
         body: (
@@ -129,6 +150,21 @@ export default function DetailPanel({
               </p>
             ))}
             {!Object.keys(content?.optionAnalysis ?? {}).length ? <p>暂无选项分析</p> : null}
+          </>
+        ),
+      },
+      {
+        key: 'answer-details',
+        title: '答案与评分要点',
+        icon: <DocumentIcon />,
+        expanded: expandedSections['answer-details'] ?? true,
+        body: (
+          <>
+            {content?.answerFormat ? <p><span className="analysis-highlight">答案格式：</span>{content.answerFormat}</p> : null}
+            {(content?.blankAnswers ?? []).map((item, index) => <p key={`blank-${index}`}><span className="analysis-highlight">第 {index + 1} 空：</span>{item}</p>)}
+            {(content?.scoringPoints ?? []).map((item) => <p key={`score-${item}`}><span className="analysis-highlight">得分点：</span>{item}</p>)}
+            {(content?.rubric ?? []).map((item) => <p key={`rubric-${item}`}><span className="analysis-highlight">评分依据：</span>{item}</p>)}
+            {!content?.blankAnswers?.length && !content?.scoringPoints?.length && !content?.rubric?.length ? <p>暂无额外评分要点</p> : null}
           </>
         ),
       },
@@ -147,7 +183,7 @@ export default function DetailPanel({
         ),
       },
     ];
-  }, [analysis, expandedSections]);
+  }, [analysis, expandedSections, optionCount]);
 
   const structureNotices = useMemo(() => {
     const warnings = question?.structureWarnings ?? [];
@@ -169,6 +205,7 @@ export default function DetailPanel({
     setDraftAnswer(question?.correctAnswer ?? '');
     setDraftQuestionType(question?.questionType ?? 'subjective');
     setDraftOptions([...(question?.options ?? [])].sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0)));
+    setPracticeTextAnswer(question?.userAnswer ?? '');
   }
 
   function updateDraftOption(index: number, patch: Partial<OptionItem>) {
@@ -311,7 +348,11 @@ export default function DetailPanel({
                   </label>
                   <label className="form-field">
                     <span className="form-label">正确答案</span>
-                    <input className="form-input" value={draftAnswer} onChange={(e) => setDraftAnswer(e.target.value)} />
+                    {draftTextQuestion ? (
+                      <textarea className="form-input form-textarea" rows={8} value={draftAnswer} onChange={(e) => setDraftAnswer(e.target.value)} />
+                    ) : (
+                      <input className="form-input" value={draftAnswer} onChange={(e) => setDraftAnswer(e.target.value)} />
+                    )}
                   </label>
                   <div className="form-field">
                     <div className="option-edit-header">
@@ -345,7 +386,18 @@ export default function DetailPanel({
               )}
             </div>
 
-            {!editing ? <div className="option-list">
+            {!editing && !showAnswer && textQuestion ? (
+              <div className="practice-text-answer">
+                {questionType === 'fill_blank' ? (
+                  <input value={practiceTextAnswer} onChange={(event) => setPracticeTextAnswer(event.target.value)} placeholder="按空位顺序填写答案" />
+                ) : (
+                  <textarea value={practiceTextAnswer} onChange={(event) => setPracticeTextAnswer(event.target.value)} placeholder="输入你的答案" rows={6} />
+                )}
+                <button className="primary-button" type="button" disabled={submittingAnswer || !practiceTextAnswer.trim()} onClick={() => onSubmitTextAnswer(practiceTextAnswer)}>
+                  {submittingAnswer ? '提交中...' : '提交答案'}
+                </button>
+              </div>
+            ) : !editing ? <div className="option-list">
               {detailOptions.map((option) => (
                 <div
                   key={option.key}
@@ -374,14 +426,19 @@ export default function DetailPanel({
                   {option.isWrong ? <span style={{ color: '#f07b7b', fontSize: 12, marginLeft: 4 }}>你的选择</span> : null}
                 </div>
               ))}
-              {!detailOptions.length ? <div className="empty-state">暂无选项</div> : null}
+              {!detailOptions.length ? <div className="empty-state">暂无选项，当前题型使用文本作答</div> : null}
+              {multiChoice && detailOptions.length ? <div className="empty-state">可选择多个选项，点击后会保存当前组合</div> : null}
               {submittingAnswer ? <div className="empty-state">提交中...</div> : null}
             </div> : null}
 
             {showAnswer && (
-              <div className="answer-row">
+              <div className={cx('answer-row', textQuestion && 'answer-row--long')}>
                 <span>正确答案</span>
-                <strong>{question?.correctAnswer ?? '未设置'}</strong>
+                {textQuestion ? (
+                  <div className="answer-row-content">
+                    <MarkdownRenderer content={question?.correctAnswer ?? '未设置'} />
+                  </div>
+                ) : <strong>{question?.correctAnswer ?? '未设置'}</strong>}
               </div>
             )}
           </section>

@@ -20,6 +20,17 @@ type Client struct {
 	httpClient *http.Client
 }
 
+type HealthResponse struct {
+	Status           string  `json:"status"`
+	OCRBackend       string  `json:"ocrBackend"`
+	LLMBackend       string  `json:"llmBackend"`
+	LLMConfigured    bool    `json:"llmConfigured"`
+	LLMModel         *string `json:"llmModel"`
+	VisionBackend    string  `json:"visionBackend"`
+	VisionConfigured bool    `json:"visionConfigured"`
+	VisionModel      *string `json:"visionModel"`
+}
+
 func NewClient(baseURL string, timeout time.Duration) *Client {
 	return &Client{
 		baseURL: baseURL,
@@ -27,6 +38,18 @@ func NewClient(baseURL string, timeout time.Duration) *Client {
 			Timeout: timeout,
 		},
 	}
+}
+
+func (c *Client) Health(ctx context.Context) (*HealthResponse, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/internal/v1/health", nil)
+	if err != nil {
+		return nil, fmt.Errorf("build ai health request: %w", err)
+	}
+	var result HealthResponse
+	if err := c.doJSON(req, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
 }
 
 type OptionItem struct {
@@ -75,6 +98,10 @@ type AnalyzeQuestionRequest struct {
 
 type AnalysisPayload struct {
 	Answer                   string              `json:"answer"`
+	AnswerFormat             string              `json:"answerFormat,omitempty"`
+	BlankAnswers             []string            `json:"blankAnswers,omitempty"`
+	ScoringPoints            []string            `json:"scoringPoints,omitempty"`
+	Rubric                   []string            `json:"rubric,omitempty"`
 	Summary                  string              `json:"summary"`
 	KnowledgePoints          []string            `json:"knowledgePoints"`
 	TaxonomySuggestion       *TaxonomySuggestion `json:"taxonomySuggestion,omitempty"`
@@ -418,7 +445,7 @@ func (c *Client) doJSON(req *http.Request, target any) error {
 	}
 
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return fmt.Errorf("ai service returned status %d: %s", resp.StatusCode, string(respBytes))
+		return fmt.Errorf("ai service returned status %d", resp.StatusCode)
 	}
 
 	if err := json.Unmarshal(respBytes, target); err != nil {

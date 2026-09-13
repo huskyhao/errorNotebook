@@ -1,5 +1,5 @@
 import React from 'react';
-import { cx } from '../utils';
+import { cx, questionTypeLabel } from '../utils';
 import type { QuestionItem } from '../types';
 import { TrashIcon } from './icons';
 import FavoriteButton from './FavoriteButton';
@@ -27,7 +27,7 @@ export default function QuestionCard({
 }: QuestionCardProps) {
   const userTags = item.tags ?? [];
   const needsReview = item.qualityStatus === 'needs_review';
-  const showHeader = userTags.length > 0 || item.isFavorited || needsReview;
+  const showHeader = true;
 
   return (
     <article
@@ -43,6 +43,7 @@ export default function QuestionCard({
       <div className="question-card-main">
         {showHeader && (
           <div className={cx('question-card-header', userTags.length === 0 && 'is-flags-only')}>
+            <span className="tag tag--outline">{questionTypeLabel(item.questionType)}</span>
             {userTags.length > 0 && (
               <div className="tag-group">
                 {userTags.map((tag) => (

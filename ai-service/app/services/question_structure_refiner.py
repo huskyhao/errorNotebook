@@ -11,6 +11,7 @@ from app.core.logging import format_log
 from app.schemas.question import OptionItem, QuestionMetadata, StructuredQuestion
 from app.services.openai_client import OpenAICompatibleError, build_openai_client
 from app.services.question_structurer import StructuredQuestionResult, strip_question_ui_prefix
+from app.services.question_type_prompts import QUESTION_TYPE_GUIDANCE
 
 logger = logging.getLogger("app.services.question_structure_refiner")
 
@@ -62,10 +63,12 @@ class QuestionStructureRefiner:
             return self._fallback(result, "llm_refine_unavailable")
 
         system_prompt = (
-            "你是 ErroNotebook 的 OCR 题面结构校验器，只负责修正题干和选项边界。"
+            "你是 ErroNotebook 的 OCR 题面结构校验器，只负责修正题干、题型和选项边界。"
             "你不能解题，不能生成答案解析，不能根据知识推断正确答案。"
             "你必须严格根据 rawOcrText 和规则解析结果恢复题面结构。"
             "如果 rawOcrText 中确实看不到某个选项内容，不要编造，只在 warnings 中标记。"
+            "题型只能从 single_choice、multiple_choice、true_false、fill_blank、subjective、short_answer、essay、calculation 中选择；"
+            "有选项时区分单选、多选、判断，无选项时根据题干语义判断，否则使用 subjective。"
             "题干必须移除倒计时、题目进度、题型、分值、难度等考试界面信息。"
             "识别 OA.、O B.、D。 等 OCR 噪声；如果 B 与 D 之间有明显选项语义但缺少 C 标记，可恢复为 C。"
             "直接返回 JSON 对象，不要 markdown，不要解释。\n\n"
@@ -142,7 +145,7 @@ class QuestionStructureRefiner:
         ]
         warnings = [str(item).strip() for item in payload.get("warnings", []) if str(item).strip()]
         question_type = str(payload.get("questionType") or base.questionType)
-        if question_type not in {"single_choice", "multiple_choice", "subjective", "unknown"}:
+        if question_type not in QUESTION_TYPE_GUIDANCE:
             question_type = base.questionType
 
         refined_stem, ui_noise_removed = strip_question_ui_prefix(

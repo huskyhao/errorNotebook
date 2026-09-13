@@ -40,6 +40,26 @@ func TestAgentActionContract(t *testing.T) {
 	}
 }
 
+func TestHealthDoesNotExposeProviderSecret(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/internal/v1/health" || r.Method != http.MethodGet {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"ok","ocrBackend":"auto","llmBackend":"openai_compatible","llmConfigured":true,"llmModel":"text-model","visionBackend":"not_configured","visionConfigured":false,"visionModel":null}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, 2*time.Second)
+	status, err := client.Health(context.Background())
+	if err != nil {
+		t.Fatalf("health: %v", err)
+	}
+	if !status.LLMConfigured || status.LLMModel == nil || *status.LLMModel != "text-model" {
+		t.Fatalf("unexpected status: %+v", status)
+	}
+}
+
 func TestChatWithImagesSendsActualBytesInOrder(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Content-Type") == "" {

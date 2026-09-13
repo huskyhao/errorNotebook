@@ -807,8 +807,8 @@ Python 只负责产生这段结果；Go 负责将其纳入解析记录、校验�
 | category_id | bigint nullable | 主分类 |
 | stem | text | 题干 |
 | question_type | varchar | 题型 |
-| correct_answer | varchar nullable | 正确答案 |
-| user_answer | varchar nullable | 用户最近一次作答 |
+| correct_answer | text nullable | 正确答案；支持主观题长文本、公式与代码 |
+| user_answer | text nullable | 用户最近一次作答 |
 | review_state | varchar | 学习状态 |
 | ocr_status | varchar | uploaded/processing/completed/failed |
 | analysis_status | varchar | queued/processing/completed/needs_review/failed |
@@ -847,7 +847,7 @@ Python 只负责产生这段结果；Go 负责将其纳入解析记录、校验�
 | id | bigint | 主键 |
 | question_id | bigint | 题目 ID |
 | provider | varchar | 使用的模型提供方 |
-| answer | varchar nullable | 解析答案 |
+| answer | text nullable | 解析答案；支持主观题长文本、公式与代码 |
 | content_json | json | 结构化解析结果 |
 | created_at | timestamp | 创建时间 |
 

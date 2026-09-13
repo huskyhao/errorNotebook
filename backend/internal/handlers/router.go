@@ -78,6 +78,7 @@ func NewRouter(
 	}
 
 	if questionAIHandler != nil {
+		api.GET("/settings/ai", questionAIHandler.ProviderStatus)
 		internalAI := api.Group("/internal/ai")
 		{
 			internalAI.POST("/ocr/parse", questionAIHandler.ParseImage)
