@@ -51,7 +51,67 @@ ErroNotebook/
 └── LICENSE           # MIT License
 ```
 
-## 环境要求
+## Docker 一键启动（推荐）
+
+Docker 模式会同时启动 React 前端、Go 后端、Python AI 服务和 MySQL。默认启用 mock OCR / LLM，不需要 API Key 就能跑通完整服务链路。
+
+### 1. 准备 Docker Desktop
+
+在 Windows 上启动 Docker Desktop，并确认使用 Linux containers。Docker Desktop 的 Settings → Resources → WSL Integration 中应启用当前 WSL 发行版。
+
+在项目根目录确认环境可用：
+
+```powershell
+docker version
+docker compose version
+```
+
+### 2. 配置环境变量
+
+```powershell
+Copy-Item .env.example .env
+```
+
+本地体验可直接使用模板默认值。`.env` 已被 Git 忽略，不会上传到 GitHub。请至少在对外部署前修改 `MYSQL_ROOT_PASSWORD`。
+
+### 3. 构建并启动完整项目
+
+```powershell
+docker compose up -d --build
+docker compose ps
+```
+
+第一次构建需要下载基础镜像和依赖，耗时取决于网络。所有服务显示 `healthy` 后访问：
+
+| 入口 | 地址 |
+| --- | --- |
+| 错题工作台 | <http://localhost:3000> |
+| Go 健康检查 | <http://localhost:8080/health> |
+| Python AI 健康检查 | <http://localhost:8001/internal/v1/health> |
+| Python OpenAPI 文档 | <http://localhost:8001/docs> |
+
+前端容器通过 Nginx 将 `/api/v1` 转发到 Go 后端；Go 使用 Docker 内部网络访问 Python 与 MySQL，浏览器不会直连 AI 服务。
+
+### 4. 查看日志或停止
+
+```powershell
+docker compose logs -f
+docker compose down
+```
+
+MySQL 数据保存在 `mysql-data` volume，上传图片保存在 `uploaded-files` volume，普通的 `docker compose down` 不会删除它们。只有明确要清空所有本地数据时才运行 `docker compose down -v`。
+
+代码修改后重新构建：
+
+```powershell
+docker compose up -d --build
+```
+
+如需使用真实模型，在根目录 `.env` 中配置 `LLM_BACKEND=openai_compatible`、`OPENAI_BASE_URL`、`OPENAI_API_KEY`、`OPENAI_MODEL`，以及可选的 `VISION_*` 配置，然后重新启动。密钥不要写入 Compose 文件或提交到 Git。
+
+若本机的 `3000`、`8080` 或 `8001` 已被占用，可在 `.env` 中修改对应的 `FRONTEND_PORT`、`BACKEND_PORT` 或 `AI_SERVICE_PORT`。容器内 MySQL 不暴露宿主机端口，因此不会与你电脑上已有的 MySQL 冲突。
+
+## 不使用 Docker 的环境要求
 
 - Node.js 18+
 - Go 1.26+

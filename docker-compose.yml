@@ -1,0 +1,137 @@
+name: erro-notebook
+
+services:
+  mysql:
+    image: mysql:8.4
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-erro_notebook_dev}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-erro_notebook}
+      TZ: ${TZ:-Asia/Shanghai}
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD --silent",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+    networks:
+      - erro-notebook
+
+  ai-service:
+    build:
+      context: ./ai-service
+    restart: unless-stopped
+    environment:
+      APP_NAME: ${APP_NAME:-ErroNotebook AI Service}
+      APP_VERSION: ${APP_VERSION:-0.2.0}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      OCR_BACKEND: ${OCR_BACKEND:-mock}
+      OCR_ENABLE_PREPROCESS: ${OCR_ENABLE_PREPROCESS:-true}
+      OCR_MOCK_DELAY_SECONDS: ${OCR_MOCK_DELAY_SECONDS:-0.2}
+      OCR_LOW_CONFIDENCE_THRESHOLD: ${OCR_LOW_CONFIDENCE_THRESHOLD:-0.72}
+      LLM_BACKEND: ${LLM_BACKEND:-mock}
+      LLM_MOCK_DELAY_SECONDS: ${LLM_MOCK_DELAY_SECONDS:-0.2}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-}
+      OPENAI_TIMEOUT_SECONDS: ${OPENAI_TIMEOUT_SECONDS:-30}
+      OPENAI_TEMPERATURE: ${OPENAI_TEMPERATURE:-0.2}
+      OPENAI_MAX_TOKENS: ${OPENAI_MAX_TOKENS:-1200}
+      AI_MAX_ATTEMPTS: ${AI_MAX_ATTEMPTS:-3}
+      AI_MAX_REPAIRS: ${AI_MAX_REPAIRS:-1}
+      AI_ACTION_TIMEOUT_SECONDS: ${AI_ACTION_TIMEOUT_SECONDS:-45}
+      AI_HISTORY_MAX_ITEMS: ${AI_HISTORY_MAX_ITEMS:-12}
+      AI_CONTEXT_MAX_CHARS: ${AI_CONTEXT_MAX_CHARS:-24000}
+      AI_MAX_IMAGE_BYTES: ${AI_MAX_IMAGE_BYTES:-8388608}
+      AI_MAX_IMAGE_COUNT: ${AI_MAX_IMAGE_COUNT:-4}
+      VISION_BASE_URL: ${VISION_BASE_URL:-}
+      VISION_API_KEY: ${VISION_API_KEY:-}
+      VISION_MODEL: ${VISION_MODEL:-Qwen3-VL-32B-Instruct}
+      VISION_TIMEOUT_SECONDS: ${VISION_TIMEOUT_SECONDS:-30}
+      VISION_TEMPERATURE: ${VISION_TEMPERATURE:-0.2}
+      VISION_MAX_TOKENS: ${VISION_MAX_TOKENS:-600}
+    ports:
+      - "${AI_SERVICE_PORT:-8001}:8001"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/internal/v1/health', timeout=3)",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    networks:
+      - erro-notebook
+
+  backend:
+    build:
+      context: ./backend
+    restart: unless-stopped
+    environment:
+      PORT: "8080"
+      MYSQL_DSN: root:${MYSQL_ROOT_PASSWORD:-erro_notebook_dev}@tcp(mysql:3306)/${MYSQL_DATABASE:-erro_notebook}?charset=utf8mb4&parseTime=True&loc=Local
+      AI_SERVICE_BASE_URL: http://ai-service:8001
+      AI_SERVICE_TIMEOUT_SECONDS: ${AI_SERVICE_TIMEOUT_SECONDS:-15}
+      AI_SERVICE_ASYNC_TIMEOUT_SECONDS: ${AI_SERVICE_ASYNC_TIMEOUT_SECONDS:-300}
+      MAX_BATCH_SIZE: ${MAX_BATCH_SIZE:-20}
+      TASK_WORKER_COUNT: ${TASK_WORKER_COUNT:-3}
+      TASK_STALE_AFTER_SECONDS: ${TASK_STALE_AFTER_SECONDS:-600}
+      TASK_POLL_INTERVAL_SECONDS: ${TASK_POLL_INTERVAL_SECONDS:-2}
+      STORAGE_BACKEND: local
+      STORAGE_LOCAL_ROOT: /app/uploads
+      TZ: ${TZ:-Asia/Shanghai}
+    ports:
+      - "${BACKEND_PORT:-8080}:8080"
+    volumes:
+      - uploaded-files:/app/uploads
+    depends_on:
+      mysql:
+        condition: service_healthy
+      ai-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    networks:
+      - erro-notebook
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        REACT_APP_API_BASE_URL: /api/v1
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-3000}:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    networks:
+      - erro-notebook
+
+volumes:
+  mysql-data:
+  uploaded-files:
+
+networks:
+  erro-notebook:
+    driver: bridge

@@ -1,0 +1,22 @@
+FROM golang:1.26.1-alpine AS builder
+
+WORKDIR /src
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/server ./cmd/server
+
+FROM alpine:3.23
+
+RUN apk add --no-cache ca-certificates tzdata
+
+WORKDIR /app
+COPY --from=builder /out/server /app/server
+RUN mkdir -p /app/uploads && chown -R nobody:nobody /app
+
+EXPOSE 8080
+
+USER nobody
+ENTRYPOINT ["/app/server"]

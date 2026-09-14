@@ -1,0 +1,11 @@
+.env
+.gocache/
+backend/
+bin/
+dist/
+vendor/
+uploads/
+uploads-*/
+*.exe
+*.test
+*.out

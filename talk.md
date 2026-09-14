@@ -1,3 +1,30 @@
+# 2026-09-14 Docker 一键启动与 GitHub 发布
+
+## 本轮结论
+
+- 已建立 `docker-compose.yml`，统一编排 React + Nginx 前端、Go + Gin 业务后端、Python + FastAPI AI 服务和 MySQL 8.4；启动顺序由健康检查约束，不依赖人工等待。
+- 前端生产镜像通过 Nginx 提供 SPA，并将浏览器的 `/api/v1` 请求转发给 Go；Go 通过 Docker 私有网络访问 Python 和 MySQL，继续遵守“前端不直连 Python、Go 是唯一业务入口”的边界。
+- MySQL 和上传文件分别使用 `mysql-data`、`uploaded-files` named volume 持久化；MySQL 不暴露宿主机端口，避免与本机已有 MySQL 冲突。
+- Docker 默认启用 mock OCR / LLM，不配置密钥也能启动完整系统；真实 Provider 只通过根目录 `.env` 注入，`.env` 不进入 Git 或镜像构建上下文。
+- 三个自建镜像均采用分层或精简构建，Go 与 Python 运行阶段使用非 root 用户；各服务的 `.dockerignore` 排除了本地缓存、依赖、上传目录、密钥和构建产物。
+
+## 验证结果
+
+- `docker compose config --quiet` 通过，三个自建镜像实际构建成功。
+- `mysql`、`ai-service`、`backend`、`frontend` 四个容器均为 `healthy`。
+- 宿主机请求 `http://localhost:3000/health`、`http://localhost:3000/api/v1/health`、`http://localhost:8080/health`、`http://localhost:8001/internal/v1/health` 均返回 HTTP 200。
+- Go 全量测试通过；Python 离线测试 33/33 通过；前端 4 个测试套件、5/5 测试通过，生产构建和容器内生产构建均成功。
+
+## 使用方式
+
+```powershell
+Copy-Item .env.example .env
+docker compose up -d --build
+docker compose ps
+```
+
+工作台入口为 `http://localhost:3000`。普通停止使用 `docker compose down`，不会删除数据库和上传文件；只有明确要清空本地数据时才使用 `docker compose down -v`。
+
 # 2026-09-14 主观题 103 解析失败诊断与日志补强
 
 ## 诊断结论
