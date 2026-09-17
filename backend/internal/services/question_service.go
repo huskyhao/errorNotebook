@@ -1249,7 +1249,9 @@ func (s *QuestionService) runOCRObject(ctx context.Context, question *models.Que
 		return err
 	}
 	traceID := fmt.Sprintf("trace_ocr_%d", time.Now().UnixNano())
-	resp, err := s.aiClient.ParseQuestionImage(ctx, question.ID, traceID, question.SourceType, tempPath)
+	// OCR may call a remote vision model and therefore belongs on the async
+	// client. The short client is reserved for interactive health/status calls.
+	resp, err := s.aiClientAsync.ParseQuestionImage(ctx, question.ID, traceID, question.SourceType, tempPath)
 	if err != nil {
 		return fmt.Errorf("parse question image by ai service: %w", err)
 	}

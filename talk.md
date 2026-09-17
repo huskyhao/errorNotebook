@@ -1,3 +1,18 @@
+# 2026-09-18 真实视觉 OCR 替换静默 Mock 降级
+
+## 问题与根因
+
+- 线上上传图片后出现固定的“进程同步与互斥”题目，确认该文本来自 `MockOCRBackend`，不是图片识别结果。
+- Python 镜像未安装体积较大的 PaddleOCR；原 `OCR_BACKEND=auto` 在 PaddleOCR 初始化失败时吞掉异常并静默退回 Mock，导致假题面被当作成功结果保存。
+- 随后的解析链路确实调用了真实模型，但它拿到的输入已经是 Mock 假题，因此形成“真实 AI 解答假题”的错误组合。
+
+## 修复结论
+
+- `auto` 现在优先使用已配置的 OpenAI-compatible 视觉模型完成题面转写；服务器显式使用 `OCR_BACKEND=vision`。
+- 没有可用真实 OCR provider 时返回 `OCR_PROVIDER_UNAVAILABLE`，不再生成或保存 Mock 题目；Mock 仅在明确设置 `OCR_BACKEND=mock` 时启用。
+- Go worker 的 OCR 请求改用 300 秒异步 AI client，不再受 15 秒交互请求超时限制。
+- 新增视觉 OCR 选择、真实转写和无 provider 明确失败测试；Python 36 项测试与 Go 全量测试通过。
+
 # 2026-09-18 2C2G 服务器部署与 NPM 接入
 
 ## 部署结论

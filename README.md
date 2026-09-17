@@ -107,7 +107,7 @@ MySQL 数据保存在 `mysql-data` volume，上传图片保存在 `uploaded-file
 docker compose up -d --build
 ```
 
-如需使用真实模型，在根目录 `.env` 中配置 `LLM_BACKEND=openai_compatible`、`OPENAI_BASE_URL`、`OPENAI_API_KEY`、`OPENAI_MODEL`，以及可选的 `VISION_*` 配置，然后重新启动。密钥不要写入 Compose 文件或提交到 Git。
+如需使用真实模型，在根目录 `.env` 中配置 `LLM_BACKEND=openai_compatible`、`OPENAI_BASE_URL`、`OPENAI_API_KEY`、`OPENAI_MODEL`，以及 `VISION_*` 配置。需要视觉模型直接识别题目图片时设置 `OCR_BACKEND=vision`；`auto` 会优先选择已配置的视觉模型，其次尝试本机 PaddleOCR。只有显式设置 `OCR_BACKEND=mock` 才会生成演示题面。配置后重新启动，密钥不要写入 Compose 文件或提交到 Git。
 
 若本机的 `3000`、`8080` 或 `8001` 已被占用，可在 `.env` 中修改对应的 `FRONTEND_PORT`、`BACKEND_PORT` 或 `AI_SERVICE_PORT`。容器内 MySQL 不暴露宿主机端口，因此不会与你电脑上已有的 MySQL 冲突。
 

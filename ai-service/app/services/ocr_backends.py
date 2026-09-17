@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from app.core.config import settings
+from app.services.ai_errors import AIServiceError
+from app.services.vision_service import MultimodalClient, build_multimodal_client
 
 logger = logging.getLogger("app.services.ocr_backends")
 
@@ -45,6 +47,42 @@ class MockOCRBackend:
                 if line.strip()
             ],
             engine="mock",
+        )
+
+
+class VisionOCRBackend:
+    def __init__(self, client: MultimodalClient) -> None:
+        self._client = client
+
+    async def extract_text(self, *, file_bytes: bytes, filename: str, media_type: str) -> OCRBackendResult:
+        del filename
+        content, _ = await self._client.create_structured_completion_with_image(
+            image_bytes=file_bytes,
+            media_type=media_type,
+            system_prompt=(
+                "你是严格的题目图片 OCR 转写器。只转写图片中实际可见的题干、公式、选项和必要图示文字；"
+                "保持原有顺序与换行，不解题、不补全、不推断、不解释。忽略网页按钮、计时器等无关界面元素。"
+                "只输出纯文本，不要 Markdown 代码块，也不要添加“识别结果”等前缀。"
+            ),
+            user_prompt="请逐行准确转写这张题目图片中的内容。无法辨认的局部写作 [无法识别]。",
+        )
+        text = _clean_vision_text(content)
+        if not text:
+            raise AIServiceError("OCR_EMPTY_RESULT", "vision OCR returned an empty result", True, 502)
+        return OCRBackendResult(
+            blocks=[OCRTextBlock(text=line, confidence=0.9) for line in text.splitlines() if line.strip()],
+            engine="vision",
+        )
+
+
+class UnavailableOCRBackend:
+    async def extract_text(self, *, file_bytes: bytes, filename: str, media_type: str) -> OCRBackendResult:
+        del file_bytes, filename, media_type
+        raise AIServiceError(
+            "OCR_PROVIDER_UNAVAILABLE",
+            "no real OCR provider is available; configure VISION_* or install PaddleOCR",
+            False,
+            503,
         )
 
 
@@ -99,13 +137,32 @@ def build_ocr_backend() -> OCRBackend:
     if requested == "mock":
         return MockOCRBackend()
 
+    if requested in {"auto", "vision"}:
+        client = build_multimodal_client()
+        if client is not None:
+            return VisionOCRBackend(client)
+        if requested == "vision":
+            return UnavailableOCRBackend()
+
     if requested in {"auto", "paddleocr"}:
         try:
             return PaddleOCRBackend()
-        except Exception:
-            return MockOCRBackend()
+        except Exception as exc:
+            logger.warning("real OCR backend is unavailable: %s", exc.__class__.__name__)
+            return UnavailableOCRBackend()
 
-    return MockOCRBackend()
+    logger.warning("unsupported OCR_BACKEND=%s", requested)
+    return UnavailableOCRBackend()
+
+
+def _clean_vision_text(content: str) -> str:
+    text = content.strip()
+    if text.startswith("```") and text.endswith("```"):
+        lines = text.splitlines()
+        if len(lines) >= 2:
+            lines = lines[1:-1]
+            text = "\n".join(lines).strip()
+    return text
 
 
 def has_diagram_hint(raw_text: str) -> bool:
