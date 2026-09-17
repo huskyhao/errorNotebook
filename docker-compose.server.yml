@@ -1,0 +1,47 @@
+# Production override for a small server that already runs Nginx Proxy Manager.
+# Usage: docker compose -f docker-compose.yml -f docker-compose.server.yml up -d --no-build
+
+services:
+  mysql:
+    command:
+      - --innodb-buffer-pool-size=128M
+      - --innodb-log-buffer-size=16M
+      - --max-connections=50
+      - --performance-schema=OFF
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  ai-service:
+    ports: !override
+      - "127.0.0.1:${AI_SERVICE_PORT:-18001}:8001"
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  backend:
+    ports: !override
+      - "127.0.0.1:${BACKEND_PORT:-18080}:8080"
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+
+  frontend:
+    ports: !override []
+    networks:
+      erro-notebook:
+      npm-network:
+        aliases:
+          - erro-notebook
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+
+networks:
+  npm-network:
+    external: true
+    name: npm-network

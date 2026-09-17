@@ -111,6 +111,16 @@ docker compose up -d --build
 
 若本机的 `3000`、`8080` 或 `8001` 已被占用，可在 `.env` 中修改对应的 `FRONTEND_PORT`、`BACKEND_PORT` 或 `AI_SERVICE_PORT`。容器内 MySQL 不暴露宿主机端口，因此不会与你电脑上已有的 MySQL 冲突。
 
+### 小内存服务器与 Nginx Proxy Manager
+
+服务器已有名为 `npm-network` 的 Nginx Proxy Manager 网络时，可使用生产覆盖配置：
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.server.yml up -d --no-build
+```
+
+该配置会降低 MySQL 内存占用、限制各服务的最大内存，将 Go 和 AI 调试端口仅绑定到 `127.0.0.1`，并取消前端宿主机端口。Nginx Proxy Manager 的 Forward Hostname 填 `erro-notebook`，Forward Port 填 `80`。公网只需放行 NPM 使用的 `80/443`，不应放行 MySQL、Go、AI 或前端调试端口。
+
 ## 不使用 Docker 的环境要求
 
 - Node.js 18+

@@ -1,3 +1,19 @@
+# 2026-09-18 2C2G 服务器部署与 NPM 接入
+
+## 部署结论
+
+- 目标服务器为 2 核、约 1.6 GiB 可用内存、40 GiB 系统盘，已有 Nginx Proxy Manager、Memos、Portainer、Uptime Kuma 等服务；不适合在服务器上并行执行 Node、Go、Python 镜像构建。
+- 首次远程构建触发系统盘读写带宽上限，已停止并清理 3.8 GiB 可回收 BuildKit 缓存，未删除任何现有业务镜像或容器。
+- 服务器已有有效的 2 GiB `/swapfile`，现已启用并设置 `vm.swappiness=10`，同时保留 `/etc/fstab` 自动挂载。
+- 三张业务镜像改为在本机按 `linux/amd64` 构建，通过校验后的归档上传，服务器只执行 `docker load` 与 `docker compose up --no-build`。
+- 增加 `docker-compose.server.yml`：MySQL buffer pool 限制为 128 MiB，各服务设置内存上限；前端直接加入外部 `npm-network`，NPM 使用 `erro-notebook:80` 反代；Go/AI 端口只绑定回环地址，前端不再发布宿主机端口。
+
+## 网络边界
+
+- 云安全组只需放行 Nginx Proxy Manager 已使用的 `80/tcp` 与 `443/tcp`。
+- `81/tcp` 是 NPM 管理端口，不建议向公网开放；应仅对可信来源放行或通过其他安全通道访问。
+- 不放行 `3100`、`18080`、`18001`、`3306`；MySQL 只在项目 Docker 网络内访问。
+
 # 2026-09-14 Docker 一键启动与 GitHub 发布
 
 ## 本轮结论
